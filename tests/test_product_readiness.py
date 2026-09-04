@@ -44,6 +44,27 @@ def test_approved_images_with_missing_research_fields_becomes_faltan_datos():
     assert result["package_score"] == 100
 
 
+def test_exact_source_images_count_as_usable_without_editing_or_manual_approval():
+    product = {"part_number": "82YU00XYLM", "marca": "LENOVO", "nombre": "Laptop", "upc": "197528523880"}
+    preview = {
+        "field_count": 81,
+        "fields": _fields(["DISTRIBUTOR"] * 76 + ["MARKETPLACE_INPUT"] * 5),
+        "ready_for_research": [],
+        "estimated_fields": [],
+    }
+    images = [
+        {"source_eligible": True, "is_approved": False, "editing_required": False}
+        for _ in range(4)
+    ]
+
+    result = calculate_readiness(product=product, coolbox_preview=preview, package={"method": "ESTIMATED"}, images=images)
+
+    assert result["state"] == "LISTO_PARA_REVISAR"
+    assert result["image_score"] == 100
+    assert result["usable_image_count"] == 4
+    assert result["approved_image_count"] == 0
+
+
 def test_marketplace_inputs_do_not_block_listo_para_revisar():
     product = {"part_number": "82YU00XYLM", "marca": "LENOVO", "nombre": "Laptop", "upc": "197528523880"}
     preview = {
