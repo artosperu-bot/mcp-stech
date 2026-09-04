@@ -76,6 +76,20 @@ def test_product_search_uses_v8_identifiers_and_limit():
     assert conn.closed is True
 
 
+def test_product_history_reads_real_v8_history_view_with_parameters():
+    conn = FakeConnection(many=True)
+    repo = ProductRepository(lambda: conn, view_name="dbo.V_PRD_PRODUCTO_ACTUAL")
+
+    rows = repo.history("82YU00XYLM", limit=25)
+
+    assert "dbo.V_HST_PRODUCTO_OBSERVACION_V8" in conn.cursor_obj.sql
+    assert "part_number = ?" in conn.cursor_obj.sql
+    assert "TOP (25)" in conn.cursor_obj.sql
+    assert conn.cursor_obj.params == ("82YU00XYLM",)
+    assert rows[0]["partnumber"] == "82YU00XYLM"
+    assert conn.closed is True
+
+
 def test_rejects_unsafe_view_name():
     try:
         ProductRepository(lambda: FakeConnection(), view_name="dbo.V_PRD_PRODUCTO_ACTUAL; DROP TABLE X")
