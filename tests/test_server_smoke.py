@@ -12,3 +12,7 @@ def test_server_module_imports_and_exposes_initial_tools():
     assert callable(server.packaging_rule_get)
     assert callable(server.packaging_resolve)
     assert callable(server.marketplace_preview)
+    assert callable(server.product_prepare)
+    assert callable(server.product_master_get)
+    assert callable(server.product_readiness_get)
+    assert callable(server.channel_draft_get)
