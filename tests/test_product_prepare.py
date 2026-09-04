@@ -1,0 +1,133 @@
+import json
+from decimal import Decimal
+
+from stech_mcp.services.product_prepare import ProductPrepareService
+
+
+class FakeProductRepository:
+    def __init__(self, product):
+        self.product = product
+        self.calls = []
+
+    def get_by_partnumber(self, partnumber):
+        self.calls.append(partnumber)
+        return self.product
+
+
+class FakeEnrichmentRepository:
+    def get_approved(self, partnumber, field_codes=None):
+        return []
+
+
+class FakePackagingRuleRepository:
+    def match(self, category_code, screen_inches):
+        assert category_code == "LAPTOP"
+        assert screen_inches == Decimal("15.6")
+        return {
+            "rule_code": "LAPTOP_15_X_DEFAULT",
+            "width_cm": Decimal("33.00"),
+            "length_cm": Decimal("54.00"),
+            "height_cm": Decimal("7.00"),
+            "weight_g": 2500,
+            "source_code": "REGLA_STECH_EMPAQUE",
+        }
+
+
+class FakeProductMasterRepository:
+    def __init__(self):
+        self.snapshots = []
+        self.drafts = []
+        self.audit = []
+        self.images = []
+
+    def upsert_master(self, snapshot):
+        self.snapshots.append(snapshot)
+        return snapshot
+
+    def replace_draft(self, **kwargs):
+        self.drafts.append(kwargs)
+        return {
+            "channel_draft_id": 9,
+            "draft_version": 1,
+            "field_count": len(kwargs["payload"]["fields"]),
+            "required_missing_count": len(kwargs["payload"].get("ready_for_research", [])),
+            "estimated_count": len(kwargs["payload"].get("estimated_fields", [])),
+            "status": "FALTAN_DATOS",
+        }
+
+    def list_images(self, partnumber):
+        return self.images
+
+    def add_audit_event(self, **kwargs):
+        self.audit.append(kwargs)
+
+
+def _product():
+    return {
+        "producto_distribuidor_id": 1162,
+        "distribuidor": "DELTRON",
+        "part_number": "82YU00XYLM",
+        "upc": "197528523880",
+        "mini_codigo": "418120",
+        "marca": "LENOVO",
+        "nombre": 'LAPTOP LENOVO V15 G4 AMN 15.6" RYZEN 5 7520U 16GB',
+        "precio_usd_sin_igv": 701,
+        "stock_valor": 20,
+        "stock_operador": ">",
+        "observado_at": "2026-09-04T11:41:34",
+        "atributos_json": json.dumps(
+            {
+                "especificaciones": {
+                    "MODELO": "V15 G4 AMN",
+                    "PANTALLA": '15.6 PULG FHD TN 1920 X 1080',
+                    "CPU": "AMD RYZEN 5 7520U",
+                    "PESO": "1.65 KG",
+                    "COMENTARIOS": "COLOR ARTIC GREY ADAPTADOR DE PODER 65W ROUND TIP (3-PIN)",
+                }
+            }
+        ),
+    }
+
+
+def test_prepare_persists_product_master_package_and_81_field_coolbox_draft():
+    product_repo = FakeProductRepository(_product())
+    master_repo = FakeProductMasterRepository()
+    service = ProductPrepareService(
+        product_repository=product_repo,
+        enrichment_repository=FakeEnrichmentRepository(),
+        packaging_rule_repository=FakePackagingRuleRepository(),
+        product_master_repository=master_repo,
+    )
+
+    result = service.prepare("82yu00xylm")
+
+    assert result["found"] is True
+    assert product_repo.calls == ["82YU00XYLM"]
+    assert result["package"]["weight_g"] == 2500
+    assert result["package"]["rule_code"] == "LAPTOP_15_X_DEFAULT"
+    assert result["coolbox_preview"]["field_count"] == 81
+    assert len(master_repo.drafts) == 1
+    assert len(master_repo.drafts[0]["payload"]["fields"]) == 81
+    assert master_repo.snapshots[0]["package_width_cm"] == Decimal("33.00")
+    assert master_repo.snapshots[0]["package_length_cm"] == Decimal("54.00")
+    assert master_repo.snapshots[0]["package_height_cm"] == Decimal("7.00")
+    assert master_repo.snapshots[0]["package_weight_g"] == 2500
+    assert master_repo.audit[0]["event_type"] == "PRODUCT_PREPARED"
+
+
+def test_prepare_missing_product_does_not_persist_anything():
+    product_repo = FakeProductRepository(None)
+    master_repo = FakeProductMasterRepository()
+    service = ProductPrepareService(
+        product_repository=product_repo,
+        enrichment_repository=FakeEnrichmentRepository(),
+        packaging_rule_repository=FakePackagingRuleRepository(),
+        product_master_repository=master_repo,
+    )
+
+    result = service.prepare("NO-EXISTE")
+
+    assert result == {"found": False, "partnumber": "NO-EXISTE"}
+    assert master_repo.snapshots == []
+    assert master_repo.drafts == []
+    assert master_repo.audit == []
