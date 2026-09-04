@@ -10,11 +10,13 @@ from stech_mcp.config import Settings
 from stech_mcp.db.connection import make_mcp_connection_factory, make_source_connection_factory, sql_ping
 from stech_mcp.db.enrichment_repository import EnrichmentRepository
 from stech_mcp.db.packaging_rule_repository import PackagingRuleRepository
+from stech_mcp.db.product_master_repository import ProductMasterRepository
 from stech_mcp.db.product_repository import ProductRepository
 from stech_mcp.domain.packaging_resolver import resolve_package
 from stech_mcp.domain.packaging_rules import estimate_package_weight, validate_package_dimensions
 from stech_mcp.services.coolbox_preview import _load_specs, _screen, build_coolbox_preview
 from stech_mcp.services.marketplace_preview import build_marketplace_preview
+from stech_mcp.services.product_prepare import ProductPrepareService
 from stech_mcp.tools.core import health_snapshot
 
 settings = Settings()
@@ -23,6 +25,13 @@ mcp_connection_factory = make_mcp_connection_factory(settings)
 product_repository = ProductRepository(source_connection_factory, view_name=settings.erp_product_view)
 enrichment_repository = EnrichmentRepository(mcp_connection_factory)
 packaging_rule_repository = PackagingRuleRepository(mcp_connection_factory)
+product_master_repository = ProductMasterRepository(mcp_connection_factory)
+product_prepare_service = ProductPrepareService(
+    product_repository=product_repository,
+    enrichment_repository=enrichment_repository,
+    packaging_rule_repository=packaging_rule_repository,
+    product_master_repository=product_master_repository,
+)
 
 mcp = MCPServer("STECH MCP")
 
@@ -234,6 +243,65 @@ def marketplace_preview(partnumber: str, marketplace: str, category: str = "LAPT
         package=package,
     )
     return {"found": True, **preview}
+
+
+@mcp.tool()
+def product_prepare(partnumber: str, category: str = "LAPTOP") -> dict[str, Any]:
+    """Prepara y persiste el Product Workspace sin publicar en ningún marketplace."""
+    return product_prepare_service.prepare(partnumber, category=category)
+
+
+@mcp.tool()
+def product_master_get(partnumber: str) -> dict[str, Any]:
+    """Lee el Product Master persistido y su inventario de imágenes metadata."""
+    normalized = partnumber.strip().upper()
+    master = product_master_repository.get(normalized)
+    images = product_master_repository.list_images(normalized) if master is not None else []
+    return {
+        "found": master is not None,
+        "partnumber": normalized,
+        "master": master,
+        "images": images,
+    }
+
+
+@mcp.tool()
+def product_readiness_get(partnumber: str) -> dict[str, Any]:
+    """Devuelve readiness persistido y contadores del último draft Coolbox."""
+    normalized = partnumber.strip().upper()
+    master = product_master_repository.get(normalized)
+    if master is None:
+        return {"found": False, "partnumber": normalized, "readiness": None}
+    draft = product_master_repository.get_latest_draft(normalized, "COOLBOX")
+    return {
+        "found": True,
+        "partnumber": normalized,
+        "readiness": {
+            "state": master.get("readiness_state"),
+            "identity_score": master.get("identity_score"),
+            "technical_score": master.get("technical_score"),
+            "image_score": master.get("image_score"),
+            "package_score": master.get("package_score"),
+            "coolbox_score": master.get("coolbox_score"),
+            "image_count": master.get("image_count"),
+            "coolbox_field_count": (draft or {}).get("field_count") or master.get("coolbox_field_count"),
+            "coolbox_required_missing_count": (draft or {}).get("required_missing_count") or master.get("coolbox_required_missing_count"),
+            "coolbox_estimated_count": (draft or {}).get("estimated_count") or master.get("coolbox_estimated_count"),
+        },
+    }
+
+
+@mcp.tool()
+def channel_draft_get(partnumber: str, marketplace: str = "COOLBOX") -> dict[str, Any]:
+    """Devuelve el último draft versionado de un canal; V1 usa principalmente COOLBOX."""
+    normalized = partnumber.strip().upper()
+    market = marketplace.strip().upper()
+    draft = product_master_repository.get_latest_draft(normalized, market)
+    if draft is None:
+        return {"found": False, "partnumber": normalized, "marketplace": market, "draft": None}
+    payload = draft.get("payload") if isinstance(draft.get("payload"), dict) else {}
+    out = {**draft, "fields": list(payload.get("fields") or [])}
+    return {"found": True, "partnumber": normalized, "marketplace": market, "draft": out}
 
 
 def main() -> None:
