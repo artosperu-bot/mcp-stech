@@ -31,9 +31,63 @@ COOLBOX_FIELDS = [
     "CROSS 1", "CROSS 2", "CROSS 3", "Precio Lista (Full )", "Precio Base (Especial)", "Fecha de Inicio", "Fecha Fin", "Stock",
 ]
 
+_ENRICHMENT_TO_COOLBOX = {
+    "warranty": "Garantía",
+    "ssd_capacity_gb": "Capacidad de disco sólido (SSD)",
+    "refresh_rate_hz": "Tasa de refresco laptop",
+    "memory_detail": "Detalle de memoria RAM",
+    "storage_detail": "Detalle de discos",
+    "gpu_model": "Procesador gráfico",
+    "gpu_detail": "Detalle del procesador gráfico",
+    "os_name": "Nombre de SO",
+    "cooling_system": "Sistema de refrigeración",
+    "certifications": "Certificaciones",
+    "hdmi_ports": "Puertos HDMI",
+    "usb_a_ports": "Puertos USB",
+    "usb_c_ports": "Puertos USB Tipo-C",
+    "vga": "Conexión VGA",
+    "card_reader": "Ranura para tarjeta SD / microSD",
+    "fingerprint_reader": "Lector de huellas",
+    "face_recognition": "Reconocimiento facial",
+    "keyboard_backlit": "Teclado iluminado",
+    "keyboard_numeric": "Teclado numérico",
+    "battery_runtime_hours": "Duración de la batería",
+    "emmc_capacity": "Capacidad de disco eMMC ",
+    "touchscreen": "Pantalla táctil",
+    "power_consumption": "Consumo",
+    "announce_year": "Año",
+    "cpu_cores": "Cantidad de núcleos",
+    "cpu_generation": "Generación del procesador",
+    "keyboard_detail": "Teclado",
+    "transformer_type": "Tipo transformador",
+    "power_adapter": "Tipo transformador",
+    "plug_type": "Tipo de enchufe",
+    "box_contents": "¿Qué incluye en la caja?",
+}
+
+_NUMERIC_ENRICHMENT_FIELDS = {
+    "hdmi_ports",
+    "usb_a_ports",
+    "usb_c_ports",
+    "announce_year",
+    "cpu_cores",
+}
+
 
 def _field(value: Any = None, status: str = "RESEARCH_REQUIRED", source: str | None = None, method: str | None = None, note: str | None = None) -> dict[str, Any]:
     return {"value": value, "status": status, "source": source, "method": method or status, "note": note}
+
+
+def _compact_number(value: Any) -> Any:
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, Decimal):
+        if value == value.to_integral_value():
+            return int(value)
+        return float(value)
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return value
 
 
 def _load_specs(product: dict[str, Any]) -> dict[str, Any]:
@@ -207,10 +261,57 @@ def _gamut(processor: str | None) -> str | None:
     return None
 
 
+def _format_enrichment_value(field_code: str, row: dict[str, Any]) -> Any:
+    value_text = row.get("value_text")
+    if value_text is not None and str(value_text).strip() != "":
+        return str(value_text).strip()
+
+    number = _compact_number(row.get("value_number"))
+    if number is None:
+        return None
+    unit = str(row.get("unit") or "").strip()
+
+    if field_code == "ssd_capacity_gb":
+        return f"{number} GB"
+    if field_code == "refresh_rate_hz":
+        return f"{number} Hz"
+    if field_code == "battery_runtime_hours":
+        return f"{number} h"
+    if field_code in _NUMERIC_ENRICHMENT_FIELDS:
+        return number
+    if unit:
+        return f"{number} {unit}"
+    return number
+
+
+def _apply_enrichments(fields: dict[str, dict[str, Any]], enrichments: list[dict[str, Any]] | None) -> None:
+    for row in enrichments or []:
+        field_code = str(row.get("field_code") or "").strip().lower()
+        target = _ENRICHMENT_TO_COOLBOX.get(field_code)
+        if not target or target not in fields:
+            continue
+        value = _format_enrichment_value(field_code, row)
+        if value is None:
+            continue
+        method = str(row.get("method") or "VERIFIED").strip().upper()
+        grade = str(row.get("confidence_grade") or "").strip().upper()
+        source = "STECH_MCP.product_enrichment"
+        if grade:
+            source += f" [{grade}]"
+        fields[target] = _field(
+            value,
+            method,
+            source,
+            method,
+            note=f"approved enrichment field_code={field_code}",
+        )
+
+
 def build_coolbox_preview(
     product: dict[str, Any],
     *,
     package: dict[str, Any] | None = None,
+    enrichments: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     specs = _load_specs(product)
     name = str(product.get("nombre") or "")
@@ -355,10 +456,12 @@ def build_coolbox_preview(
             notes.append(f"confidence={confidence}")
         package_note = " | ".join(notes) or None
 
-        fields["Peso (g)"] = _field(resolved_package.get("weight_g"), package_status, package_source, package_method, package_note)
-        fields["Alto (cm)"] = _field(resolved_package.get("height_cm"), package_status, package_source, package_method, package_note)
-        fields["Ancho (cm)"] = _field(resolved_package.get("width_cm"), package_status, package_source, package_method, package_note)
-        fields["Largo  (cm)"] = _field(resolved_package.get("length_cm"), package_status, package_source, package_method, package_note)
+        fields["Peso (g)"] = _field(_compact_number(resolved_package.get("weight_g")), package_status, package_source, package_method, package_note)
+        fields["Alto (cm)"] = _field(_compact_number(resolved_package.get("height_cm")), package_status, package_source, package_method, package_note)
+        fields["Ancho (cm)"] = _field(_compact_number(resolved_package.get("width_cm")), package_status, package_source, package_method, package_note)
+        fields["Largo  (cm)"] = _field(_compact_number(resolved_package.get("length_cm")), package_status, package_source, package_method, package_note)
+
+    _apply_enrichments(fields, enrichments)
 
     for optional in ("CROSS 1", "CROSS 2", "CROSS 3"):
         fields[optional] = _field(None, "OPTIONAL", "Coolbox")
