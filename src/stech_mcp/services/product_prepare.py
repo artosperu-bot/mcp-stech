@@ -9,6 +9,28 @@ from stech_mcp.services.coolbox_preview import _load_specs, _screen, build_coolb
 from stech_mcp.services.product_images import normalize_deltron_images
 
 
+def _compact_number(value: Any) -> Any:
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, Decimal):
+        if value == value.to_integral_value():
+            return int(value)
+        return float(value)
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return value
+
+
+def _public_package(package: dict[str, Any] | None) -> dict[str, Any] | None:
+    if package is None:
+        return None
+    result = dict(package)
+    for key in ("width_cm", "length_cm", "height_cm", "weight_g"):
+        if key in result:
+            result[key] = _compact_number(result[key])
+    return result
+
+
 class ProductPrepareService:
     def __init__(
         self,
@@ -130,7 +152,7 @@ class ProductPrepareService:
             "found": True,
             "partnumber": normalized,
             "product_master": persisted_master,
-            "package": package,
+            "package": _public_package(package),
             "readiness": readiness,
             "images": images,
             "source_images": source_images,
