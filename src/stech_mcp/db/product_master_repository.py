@@ -73,7 +73,11 @@ class ProductMasterRepository:
         insert_placeholders = ",".join("?" for _ in range(1 + len(_MASTER_COLUMNS)))
 
         sql = f"""
-        IF EXISTS (SELECT 1 FROM dbo.product_master WHERE partnumber = ?)
+        IF EXISTS (
+            SELECT 1
+            FROM dbo.product_master WITH (UPDLOCK, HOLDLOCK)
+            WHERE partnumber = ?
+        )
         BEGIN
             UPDATE dbo.product_master
             SET {set_sql},
@@ -155,7 +159,7 @@ class ProductMasterRepository:
                     required_missing_count,
                     estimated_count,
                     payload_json
-                FROM dbo.channel_draft
+                FROM dbo.channel_draft WITH (UPDLOCK, HOLDLOCK)
                 WHERE partnumber = ? AND marketplace = ?
                 ORDER BY draft_version DESC, channel_draft_id DESC
                 """,
