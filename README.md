@@ -1,50 +1,32 @@
 # STECH MCP
 
-Servidor MCP de S-TECH para conectar ChatGPT/agentes con SQL Server y automatizar enriquecimiento de fichas comerciales (Coolbox y otros canales) sin exponer SQL libre.
+Servidor MCP de S-TECH para conectar ChatGPT/agentes con el SQL Server y los contratos reales de `artosperu-bot/scr` (`v8-identity`), y luego automatizar enriquecimiento/validación de fichas comerciales como Coolbox.
 
-## Estado V1
+## Contrato real reutilizado de SCR V8
 
-La rama `feat/stech-mcp-v1` ya incluye:
+STECH MCP **no crea un catálogo paralelo**. Lee directamente la estructura operativa existente:
 
-- conexión segura a SQL Server mediante `pyodbc`;
-- configuración por `.env`;
-- consultas parametrizadas por Part Number;
-- política de prioridad de fuentes confiables;
-- reglas controladas para peso/dimensiones de empaque;
-- base SQL separada `STECH_MCP` para enriquecimientos/evidencias;
-- servidor MCP basado en el SDK oficial MCP Python 2.x;
-- herramientas iniciales:
-  - `stech_health`
-  - `product_get`
-  - `packaging_estimate_weight`
-  - `packaging_validate_dimensions`
-- comando de prueba directa `stech-mcp-check <PARTNUMBER>`;
-- tests automáticos y GitHub Actions CI.
+- Base por defecto: `DB_DISTRIBUIDORES`
+- Configuración: mismas variables `DIST_SQL_*` de `scr/v8-identity`
+- Catálogo actual: `dbo.V_PRD_PRODUCTO_ACTUAL`
+- Part Number SQL: `part_number`
+- Identificadores: `ean`, `upc`, `mini_codigo`, `codigo_externo`
+- Histórico real: `dbo.HST_PRODUCTO_OBSERVACION`
+- Taxonomía operativa: Categoría/Subcategoría STECH CAT_V2
 
-## Arquitectura
+La base separada `STECH_MCP` queda reservada para evidencia, reglas y datos específicos de los flujos MCP/Coolbox; no duplica productos, stock ni históricos.
 
-```text
-ChatGPT / MCP Client
-        |
-        v
-    STECH MCP
-        |
-        +--> ERP SQL Server (solo lectura)
-        |      `dbo.V_MCP_PRODUCTO`
-        |
-        +--> Base `STECH_MCP`
-               enriquecimientos / evidencias / reglas
-```
+## Herramientas MCP actuales
 
-El MCP no ofrece una herramienta `execute_sql` genérica. El acceso al ERP se hace mediante repositorios y vistas controladas.
+- `stech_health`
+- `product_get`
+- `product_search`
+- `packaging_estimate_weight`
+- `packaging_validate_dimensions`
 
-## Requisitos Windows
+No existe `execute_sql` libre. Las consultas son parametrizadas y el catálogo se consume a través de vistas/contratos controlados.
 
-- Python 3.12+
-- Microsoft ODBC Driver 18 for SQL Server
-- acceso de red al SQL Server S-TECH
-
-## Instalación rápida
+## Instalación rápida en la misma PC/red del monitor
 
 ```powershell
 git clone https://github.com/artosperu-bot/mcp-stech.git
@@ -55,87 +37,39 @@ py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 pip install -e ".[dev]"
-
 Copy-Item .env.example .env
 ```
 
-Editar `.env` con el servidor/base reales. Para autenticación Windows:
+### Reutilizar el `.env` de SCR V8
+
+El MCP entiende directamente estas variables:
 
 ```env
-STECH_SQL_SERVER=PC005
-STECH_SQL_DATABASE=DB_ST
-STECH_SQL_AUTH=windows
-ERP_PRODUCT_VIEW=dbo.V_MCP_PRODUCTO
+DIST_SQL_SERVER=localhost
+DIST_SQL_DATABASE=DB_DISTRIBUIDORES
+DIST_SQL_TRUSTED_CONNECTION=yes
+DIST_SQL_DRIVER=ODBC Driver 18 for SQL Server
+DIST_SQL_ENCRYPT=no
+DIST_SQL_USER=
+DIST_SQL_PASSWORD=
+
+ERP_PRODUCT_VIEW=dbo.V_PRD_PRODUCTO_ACTUAL
 MCP_TRANSPORT=stdio
 ```
 
-Para autenticación SQL:
+Si `scr/v8-identity` ya funciona en esa PC, usa en el `.env` de `mcp-stech` los mismos valores reales `DIST_SQL_*`. No subas el `.env` a GitHub.
 
-```env
-STECH_SQL_AUTH=sql
-STECH_SQL_USER=stech_mcp_ro
-STECH_SQL_PASSWORD=<secreto-local>
-```
+## Prueba inmediata contra SQL real
 
-Nunca subir `.env` al repositorio.
+No necesitas crear `V_MCP_PRODUCTO`. V8 ya tiene `dbo.V_PRD_PRODUCTO_ACTUAL`.
 
-## 1. Descubrir estructura real del ERP
-
-Ejecutar en SSMS, sobre la base operativa:
-
-```text
-sql/900_discover_erp_schema.sql
-```
-
-Ese script es solo lectura y devuelve columnas de las tablas principales.
-
-Si `HST_PRODUCTO_OBSERVACION` contiene las columnas esperadas, ejecutar después:
-
-```text
-sql/010_create_v_mcp_producto_from_hst.sql
-```
-
-Ese segundo script valida primero la estructura y solo entonces crea/actualiza `dbo.V_MCP_PRODUCTO` con el último registro por `producto_distribuidor_id`. No modifica filas de negocio.
-
-La vista configurada en `ERP_PRODUCT_VIEW` debe contener al menos:
-
-```text
-partnumber
-```
-
-Recomendado:
-
-```text
-producto_distribuidor_id
-partnumber
-minicodigo
-marca
-familia
-nombre
-precio_usd_sin_igv
-stock_valor
-observado_at
-```
-
-## 2. Crear base propia del MCP
-
-Ejecutar en SSMS:
-
-```text
-sql/001_create_stech_mcp.sql
-```
-
-Esto crea `STECH_MCP` y las tablas de enriquecimiento/evidencia. No modifica tablas operativas del ERP.
-
-## 3. Probar conexión SQL + producto real
-
-Después de crear `.env` y `dbo.V_MCP_PRODUCTO`:
+Ejecuta:
 
 ```powershell
 stech-mcp-check 82YU00XYLM
 ```
 
-Salida esperada si SQL y la vista están correctos:
+La salida correcta debe mostrar:
 
 ```json
 {
@@ -143,34 +77,45 @@ Salida esperada si SQL y la vista están correctos:
   "partnumber": "82YU00XYLM",
   "found": true,
   "product": {
+    "part_number": "82YU00XYLM",
     "partnumber": "82YU00XYLM"
   }
 }
 ```
 
-Si `found` es `false`, la conexión funciona pero ese Part Number no existe en la vista. Si hay error de conexión, revisar `.env`, ODBC Driver 18, permisos y conectividad con SQL Server.
-
-## 4. Ejecutar tests
-
-```powershell
-pytest
-```
-
-## 5. Levantar MCP local por stdio
+También se puede levantar localmente:
 
 ```powershell
 stech-mcp
 ```
 
-También se puede ejecutar:
+## Qué obtiene `product_get`
 
-```powershell
-python -m stech_mcp.server
+Como lee `V_PRD_PRODUCTO_ACTUAL`, puede recibir la información que V8 ya consolida del producto: distribuidor, familia, marca, código externo, Part Number, EAN, UPC, mini código, nombre, identidad, categoría/subcategoría cuando estén en la vista, stock/precio actual y fechas disponibles en ese contrato.
+
+El histórico detallado seguirá viniendo de `HST_PRODUCTO_OBSERVACION` mediante herramientas MCP específicas que se añadirán después, en lugar de reconstruirlo desde una vista duplicada.
+
+## Base propia de evidencias Coolbox
+
+Opcionalmente ejecutar:
+
+```text
+sql/001_create_stech_mcp.sql
 ```
 
-## 6. Levantar por Streamable HTTP (preparación para túnel)
+Crea la base `STECH_MCP` para evidencia y enriquecimientos propios del MCP. No modifica las tablas de negocio de `DB_DISTRIBUIDORES`.
 
-Cambiar:
+## Verificación
+
+```powershell
+pytest
+```
+
+GitHub Actions ejecuta los mismos tests en cada cambio del PR.
+
+## Después de validar SQL local
+
+Se habilitará:
 
 ```env
 MCP_TRANSPORT=streamable-http
@@ -178,35 +123,16 @@ MCP_HOST=127.0.0.1
 MCP_PORT=8765
 ```
 
-Luego:
+y luego Cloudflare Tunnel hacia un hostname dedicado, por ejemplo `mcp.artos.pe`. Primero se valida SQL local; después se publica de forma segura.
 
-```powershell
-stech-mcp
-```
+## Siguiente incremento Coolbox
 
-La publicación mediante Cloudflare Tunnel y la lista segura de hosts se configura después de validar SQL y las herramientas localmente.
+Después de confirmar `stech-mcp-check` con un SKU real:
 
-## Política de fuentes
-
-Orden base:
-
-1. `A1`: fabricante + Part Number exacto
-2. `A2`: PDF/documentación oficial + Part Number exacto
-3. `B`: distribuidor autorizado + Part Number exacto
-4. `C`: retailer confiable + Part Number exacto
-5. `D`: mismo modelo/chasis para atributos estructurales compatibles
-6. `E`: estimación por regla, únicamente como último recurso
-
-Los campos específicos de variante (RAM, SSD, CPU, sistema operativo, color, GPU) no se heredan automáticamente desde otro SKU/chasis.
-
-## Siguiente incremento
-
-Después de validar `product_get` contra el SQL real:
-
-- `product_search`
-- `enrichment_get`
-- `enrichment_upsert`
-- `coolbox_schema_get`
-- `product_validate`
-- `coolbox_export`
-- vista web para cargar, editar, aprobar y exportar Excel.
+- histórico/stock/precio/ubicaciones desde V8;
+- `enrichment_get` / `enrichment_upsert` con evidencia confiable;
+- esquema de la plantilla Coolbox;
+- validación de todos los campos amarillos obligatorios;
+- reglas de empaque como último recurso;
+- carga + vista previa editable + aprobación;
+- exportación del Excel original conservando estructura y validaciones.
