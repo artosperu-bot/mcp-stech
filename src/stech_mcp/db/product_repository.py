@@ -5,6 +5,7 @@ from collections.abc import Callable
 from typing import Any
 
 _SAFE_VIEW = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*$")
+_HISTORY_VIEW = "dbo.V_HST_PRODUCTO_OBSERVACION_V8"
 
 
 class ProductRepository:
@@ -12,6 +13,7 @@ class ProductRepository:
 
     El contrato real de scr/v8-identity es dbo.V_PRD_PRODUCTO_ACTUAL y usa
     `part_number`, `mini_codigo`, `codigo_externo`, EAN/UPC, stock y precio.
+    El histórico append-only se consulta desde V_HST_PRODUCTO_OBSERVACION_V8.
     """
 
     def __init__(
@@ -29,7 +31,7 @@ class ProductRepository:
     def _row_to_dict(cursor: Any, row: Any) -> dict[str, Any]:
         columns = [item[0] for item in cursor.description]
         product = dict(zip(columns, row, strict=False))
-        # Alias estable del MCP sin perder el nombre SQL real.
+        # Alias estable del MCP sin perder los nombres SQL reales.
         if product.get("part_number") is not None:
             product["partnumber"] = product["part_number"]
         if product.get("mini_codigo") is not None:
@@ -74,6 +76,27 @@ WHERE part_number LIKE ?
    OR nombre LIKE ?
 ORDER BY ultima_observacion DESC, producto_distribuidor_id DESC"""
             cursor.execute(sql, like, like, like, like, like, like)
+            return [self._row_to_dict(cursor, row) for row in cursor.fetchall()]
+        finally:
+            close = getattr(connection, "close", None)
+            if callable(close):
+                close()
+
+    def history(self, partnumber: str, *, limit: int = 25) -> list[dict[str, Any]]:
+        """Devuelve observaciones reales V8; no sintetiza intervalos faltantes."""
+        partnumber = str(partnumber or "").strip()
+        if not partnumber:
+            raise ValueError("partnumber is required")
+        limit = max(1, min(int(limit), 200))
+
+        connection = self._connection_factory()
+        try:
+            cursor = connection.cursor()
+            sql = f"""SELECT TOP ({limit}) *
+FROM {_HISTORY_VIEW}
+WHERE part_number = ?
+ORDER BY observado_at DESC, observacion_id DESC"""
+            cursor.execute(sql, partnumber)
             return [self._row_to_dict(cursor, row) for row in cursor.fetchall()]
         finally:
             close = getattr(connection, "close", None)
