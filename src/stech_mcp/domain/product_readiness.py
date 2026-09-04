@@ -37,13 +37,18 @@ def calculate_readiness(
     technical_score = round(len(non_missing) / len(noncommercial) * 100) if noncommercial else 0
 
     approved_images = sum(1 for image in images if bool(image.get("is_approved")))
-    if approved_images >= 4:
+    usable_images = sum(
+        1
+        for image in images
+        if bool(image.get("is_approved")) or bool(image.get("source_eligible"))
+    )
+    if usable_images >= 4:
         image_score = 100
-    elif approved_images == 3:
+    elif usable_images == 3:
         image_score = 75
-    elif approved_images == 2:
+    elif usable_images == 2:
         image_score = 50
-    elif approved_images == 1:
+    elif usable_images == 1:
         image_score = 25
     else:
         image_score = 0
@@ -81,5 +86,6 @@ def calculate_readiness(
         "missing_fields": missing_fields,
         "estimated_fields": estimated_fields,
         "image_count": len(images),
+        "usable_image_count": usable_images,
         "approved_image_count": approved_images,
     }
