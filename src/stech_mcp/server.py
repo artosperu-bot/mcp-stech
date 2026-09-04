@@ -8,6 +8,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 
 from stech_mcp.config import Settings
 from stech_mcp.db.connection import make_mcp_connection_factory, make_source_connection_factory, sql_ping
+from stech_mcp.db.deltron_image_repository import DeltronImageRepository
 from stech_mcp.db.enrichment_repository import EnrichmentRepository
 from stech_mcp.db.packaging_rule_repository import PackagingRuleRepository
 from stech_mcp.db.product_master_repository import ProductMasterRepository
@@ -18,6 +19,7 @@ from stech_mcp.services.coolbox_preview import _load_specs, _screen, build_coolb
 from stech_mcp.services.marketplace_preview import build_marketplace_preview
 from stech_mcp.services.product_approval import ProductApprovalService
 from stech_mcp.services.product_field_verification import ProductFieldVerificationService
+from stech_mcp.services.product_images import normalize_deltron_images
 from stech_mcp.services.product_prepare import ProductPrepareService
 from stech_mcp.tools.core import health_snapshot
 
@@ -25,6 +27,7 @@ settings = Settings()
 source_connection_factory = make_source_connection_factory(settings)
 mcp_connection_factory = make_mcp_connection_factory(settings)
 product_repository = ProductRepository(source_connection_factory, view_name=settings.erp_product_view)
+deltron_image_repository = DeltronImageRepository(source_connection_factory)
 enrichment_repository = EnrichmentRepository(mcp_connection_factory)
 packaging_rule_repository = PackagingRuleRepository(mcp_connection_factory)
 product_master_repository = ProductMasterRepository(mcp_connection_factory)
@@ -33,6 +36,7 @@ product_prepare_service = ProductPrepareService(
     enrichment_repository=enrichment_repository,
     packaging_rule_repository=packaging_rule_repository,
     product_master_repository=product_master_repository,
+    source_image_repository=deltron_image_repository,
 )
 product_approval_service = ProductApprovalService(product_master_repository)
 product_field_verification_service = ProductFieldVerificationService(enrichment_repository)
@@ -368,6 +372,51 @@ def product_enrichment_get(partnumber: str) -> dict[str, Any]:
         "partnumber": normalized,
         "count": len(rows),
         "enrichments": rows,
+    }
+
+
+@mcp.tool()
+def product_images_get(partnumber: str) -> dict[str, Any]:
+    """Lee imágenes reales de Deltron y variantes del Workspace sin exigir edición de imágenes."""
+    normalized = partnumber.strip().upper()
+    product = product_repository.get_by_partnumber(normalized)
+    if product is None:
+        return {
+            "found": False,
+            "partnumber": normalized,
+            "source_image_count": 0,
+            "workspace_image_count": 0,
+            "usable_image_count": 0,
+            "images": [],
+        }
+
+    source_product_id = product.get("producto_distribuidor_id")
+    source_rows = (
+        deltron_image_repository.list_for_product(int(source_product_id))
+        if source_product_id is not None
+        else []
+    )
+    source_images = normalize_deltron_images(normalized, source_rows)
+    workspace_images = product_master_repository.list_images(normalized)
+    images = [*source_images, *workspace_images]
+    usable = sum(
+        1
+        for image in images
+        if bool(image.get("is_approved")) or bool(image.get("source_eligible"))
+    )
+
+    return {
+        "found": True,
+        "partnumber": normalized,
+        "producto_distribuidor_id": source_product_id,
+        "source_table": "DB_DISTRIBUIDORES.dbo.PRD_DELTRON_IMAGEN",
+        "source_image_count": len(source_images),
+        "workspace_image_count": len(workspace_images),
+        "usable_image_count": usable,
+        "editing_required": False,
+        "source_images": source_images,
+        "workspace_images": workspace_images,
+        "images": images,
     }
 
 
