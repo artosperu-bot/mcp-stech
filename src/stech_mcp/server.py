@@ -7,15 +7,22 @@ from mcp.server import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 
 from stech_mcp.config import Settings
-from stech_mcp.db.connection import make_source_connection_factory, sql_ping
+from stech_mcp.db.connection import make_mcp_connection_factory, make_source_connection_factory, sql_ping
+from stech_mcp.db.enrichment_repository import EnrichmentRepository
+from stech_mcp.db.packaging_rule_repository import PackagingRuleRepository
 from stech_mcp.db.product_repository import ProductRepository
+from stech_mcp.domain.packaging_resolver import resolve_package
 from stech_mcp.domain.packaging_rules import estimate_package_weight, validate_package_dimensions
-from stech_mcp.services.coolbox_preview import build_coolbox_preview
+from stech_mcp.services.coolbox_preview import _load_specs, _screen, build_coolbox_preview
+from stech_mcp.services.marketplace_preview import build_marketplace_preview
 from stech_mcp.tools.core import health_snapshot
 
 settings = Settings()
 source_connection_factory = make_source_connection_factory(settings)
+mcp_connection_factory = make_mcp_connection_factory(settings)
 product_repository = ProductRepository(source_connection_factory, view_name=settings.erp_product_view)
+enrichment_repository = EnrichmentRepository(mcp_connection_factory)
+packaging_rule_repository = PackagingRuleRepository(mcp_connection_factory)
 
 mcp = MCPServer("STECH MCP")
 
@@ -39,6 +46,28 @@ def build_transport_security(current_settings: Settings) -> TransportSecuritySet
         allowed_hosts=allowed_hosts,
         allowed_origins=allowed_origins,
     )
+
+
+def _product_screen_inches(product: dict[str, Any]) -> Decimal | None:
+    specs = _load_specs(product)
+    value = _screen(specs, str(product.get("nombre") or ""))
+    return Decimal(str(value)) if value is not None else None
+
+
+def _resolve_product_package(product: dict[str, Any], category: str) -> dict[str, Any] | None:
+    screen_inches = _product_screen_inches(product)
+    if screen_inches is None:
+        return None
+    try:
+        return resolve_package(
+            partnumber=str(product.get("part_number") or product.get("partnumber") or "").strip(),
+            category_code=category.strip().upper(),
+            screen_inches=screen_inches,
+            enrichment_repository=enrichment_repository,
+            packaging_rule_repository=packaging_rule_repository,
+        )
+    except LookupError:
+        return None
 
 
 @mcp.tool()
@@ -84,7 +113,7 @@ def product_history(partnumber: str, limit: int = 25) -> dict[str, Any]:
 
 @mcp.tool()
 def coolbox_preview(partnumber: str) -> dict[str, Any]:
-    """Prepara las 81 columnas de la plantilla Coolbox de laptops sin inventar especificaciones sensibles."""
+    """Prepara las 81 columnas Coolbox usando ficha maestra y empaque con precedencia oficial > regla."""
     product = product_repository.get_by_partnumber(partnumber)
     if product is None:
         return {
@@ -93,7 +122,8 @@ def coolbox_preview(partnumber: str) -> dict[str, Any]:
             "template": "Laptops-All in one",
             "fields": [],
         }
-    preview = build_coolbox_preview(product)
+    package = _resolve_product_package(product, "LAPTOP")
+    preview = build_coolbox_preview(product, package=package)
     return {"found": True, **preview}
 
 
@@ -135,6 +165,75 @@ def packaging_validate_dimensions(
         package_height_cm=Decimal(str(package_height_cm)),
     )
     return {"valid": valid, "reasons": reasons}
+
+
+@mcp.tool()
+def packaging_rule_get(screen_inches: float, category: str = "LAPTOP") -> dict[str, Any]:
+    """Devuelve la regla de empaque S-TECH aplicable sin presentarla como dato oficial."""
+    rule = packaging_rule_repository.match(
+        category.strip().upper(),
+        Decimal(str(screen_inches)),
+    )
+    return {"found": rule is not None, "rule": rule}
+
+
+@mcp.tool()
+def packaging_resolve(partnumber: str, category: str = "LAPTOP") -> dict[str, Any]:
+    """Resuelve empaque: primero enrichment aprobado; si falta, aplica regla S-TECH compatible."""
+    product = product_repository.get_by_partnumber(partnumber)
+    if product is None:
+        return {"found": False, "partnumber": partnumber.strip(), "package": None}
+
+    screen_inches = _product_screen_inches(product)
+    if screen_inches is None:
+        return {
+            "found": True,
+            "partnumber": partnumber.strip(),
+            "package": None,
+            "reason": "screen_inches_not_found",
+        }
+
+    try:
+        package = resolve_package(
+            partnumber=partnumber.strip(),
+            category_code=category.strip().upper(),
+            screen_inches=screen_inches,
+            enrichment_repository=enrichment_repository,
+            packaging_rule_repository=packaging_rule_repository,
+        )
+    except LookupError:
+        package = None
+
+    return {
+        "found": True,
+        "partnumber": partnumber.strip(),
+        "screen_inches": screen_inches,
+        "package": package,
+        "reason": None if package is not None else "no_package_rule_or_approved_enrichment",
+    }
+
+
+@mcp.tool()
+def marketplace_preview(partnumber: str, marketplace: str, category: str = "LAPTOP") -> dict[str, Any]:
+    """Genera preview multicanal; Fase 1 habilita COOLBOX/LAPTOP con ficha maestra reutilizable."""
+    product = product_repository.get_by_partnumber(partnumber)
+    if product is None:
+        return {
+            "found": False,
+            "partnumber": partnumber.strip(),
+            "marketplace": marketplace.strip().upper(),
+            "category": category.strip().upper(),
+            "fields": [],
+        }
+
+    package = _resolve_product_package(product, category)
+    preview = build_marketplace_preview(
+        product=product,
+        marketplace=marketplace,
+        category=category,
+        package=package,
+    )
+    return {"found": True, **preview}
 
 
 def main() -> None:
