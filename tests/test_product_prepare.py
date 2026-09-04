@@ -41,6 +41,16 @@ class FakePackagingRuleRepository:
         }
 
 
+class FakeSourceImageRepository:
+    def __init__(self, rows=None):
+        self.rows = list(rows or [])
+        self.calls = []
+
+    def list_for_product(self, producto_distribuidor_id):
+        self.calls.append(producto_distribuidor_id)
+        return list(self.rows)
+
+
 class FakeProductMasterRepository:
     def __init__(self):
         self.snapshots = []
@@ -151,6 +161,45 @@ def test_prepare_applies_all_approved_enrichments_to_persisted_coolbox_draft():
     persisted_fields = {row["field"]: row for row in master_repo.drafts[0]["payload"]["fields"]}
     assert persisted_fields["Capacidad de disco sólido (SSD)"]["value"] == "512 GB"
     assert ("82YU00XYLM", None) in enrichments.calls
+
+
+def test_prepare_uses_exact_deltron_source_images_without_requiring_editing():
+    source_rows = [
+        {
+            "imagen_id": 10 + i,
+            "producto_distribuidor_id": 1162,
+            "orden_imagen": i + 1,
+            "url_origen": f"https://imagenes.deltron.com.pe/82YU00XYLM/{i + 1}.jpg",
+            "part_number_snapshot": "82YU00XYLM",
+            "ruta_actual": fr"C:\STECH_IMAGENES\82YU00XYLM\{i + 1}.jpg",
+            "nombre_archivo": f"{i + 1}.jpg",
+            "ancho_px": 1200,
+            "alto_px": 1200,
+            "formato": "jpg",
+            "hash_sha256": str(i) * 64,
+            "fecha_eliminacion": None,
+        }
+        for i in range(4)
+    ]
+    source_repo = FakeSourceImageRepository(source_rows)
+    master_repo = FakeProductMasterRepository()
+    service = ProductPrepareService(
+        product_repository=FakeProductRepository(_product()),
+        enrichment_repository=FakeEnrichmentRepository(),
+        packaging_rule_repository=FakePackagingRuleRepository(),
+        product_master_repository=master_repo,
+        source_image_repository=source_repo,
+    )
+
+    result = service.prepare("82YU00XYLM")
+
+    assert source_repo.calls == [1162]
+    assert len(result["source_images"]) == 4
+    assert result["source_images"][0]["source_type"] == "DELTRON_DB"
+    assert result["source_images"][0]["editing_required"] is False
+    assert result["readiness"]["usable_image_count"] == 4
+    assert result["readiness"]["image_score"] == 100
+    assert result["readiness"]["state"] != "FALTAN_IMAGENES"
 
 
 def test_prepare_missing_product_does_not_persist_anything():
