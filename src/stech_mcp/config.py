@@ -64,6 +64,7 @@ class Settings(BaseSettings):
     mcp_transport: Literal["stdio", "streamable-http"] = "stdio"
     mcp_host: str = "127.0.0.1"
     mcp_port: int = 8765
+    mcp_public_host: str = "mcp.artos.pe"
     erp_product_view: str = "dbo.V_PRD_PRODUCTO_ACTUAL"
 
     @model_validator(mode="after")
