@@ -6,6 +6,7 @@ from typing import Any
 from stech_mcp.domain.packaging_resolver import resolve_package
 from stech_mcp.domain.product_readiness import calculate_readiness
 from stech_mcp.services.coolbox_preview import _load_specs, _screen, build_coolbox_preview
+from stech_mcp.services.product_images import normalize_deltron_images
 
 
 class ProductPrepareService:
@@ -16,11 +17,13 @@ class ProductPrepareService:
         enrichment_repository: Any,
         packaging_rule_repository: Any,
         product_master_repository: Any,
+        source_image_repository: Any | None = None,
     ) -> None:
         self.product_repository = product_repository
         self.enrichment_repository = enrichment_repository
         self.packaging_rule_repository = packaging_rule_repository
         self.product_master_repository = product_master_repository
+        self.source_image_repository = source_image_repository
 
     def prepare(self, partnumber: str, category: str = "LAPTOP") -> dict[str, Any]:
         normalized = str(partnumber or "").strip().upper()
@@ -51,7 +54,15 @@ class ProductPrepareService:
             package=package,
             enrichments=approved_enrichments,
         )
-        images = self.product_master_repository.list_images(normalized)
+
+        workspace_images = self.product_master_repository.list_images(normalized)
+        source_images: list[dict[str, Any]] = []
+        source_product_id = product.get("producto_distribuidor_id")
+        if self.source_image_repository is not None and source_product_id is not None:
+            source_rows = self.source_image_repository.list_for_product(int(source_product_id))
+            source_images = normalize_deltron_images(normalized, source_rows)
+
+        images = [*source_images, *workspace_images]
         readiness = calculate_readiness(
             product=product,
             coolbox_preview=preview,
@@ -61,7 +72,7 @@ class ProductPrepareService:
 
         snapshot = {
             "partnumber": normalized,
-            "source_product_id": product.get("producto_distribuidor_id"),
+            "source_product_id": source_product_id,
             "distributor": product.get("distribuidor"),
             "brand": product.get("marca"),
             "model": specs.get("MODELO"),
@@ -109,6 +120,9 @@ class ProductPrepareService:
                 "field_count": draft.get("field_count"),
                 "readiness_state": readiness.get("state"),
                 "approved_enrichment_count": len(approved_enrichments),
+                "source_image_count": len(source_images),
+                "workspace_image_count": len(workspace_images),
+                "usable_image_count": readiness.get("usable_image_count"),
             },
         )
 
@@ -119,6 +133,8 @@ class ProductPrepareService:
             "package": package,
             "readiness": readiness,
             "images": images,
+            "source_images": source_images,
+            "workspace_images": workspace_images,
             "approved_enrichments": approved_enrichments,
             "coolbox_draft": draft,
             "coolbox_preview": preview,
