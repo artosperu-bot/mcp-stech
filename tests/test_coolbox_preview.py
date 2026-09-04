@@ -68,6 +68,23 @@ def test_preview_never_invents_missing_config_sensitive_specs():
     assert fields["Procesador gráfico"]["value"] is None
 
 
+def test_preview_does_not_block_on_columns_left_blank_by_real_completed_coolbox_laptop_rows():
+    preview = build_coolbox_preview(_product())
+    fields = {row["field"]: row for row in preview["fields"]}
+    optional_when_unknown = (
+        "Memoria unificada",
+        "Sistema de refrigeración",
+        "Duración de la batería",
+        "Capacidad de disco eMMC ",
+        "Consumo",
+        "Tipo de enchufe",
+    )
+    for name in optional_when_unknown:
+        assert fields[name]["value"] is None
+        assert fields[name]["status"] == "OPTIONAL"
+        assert name not in preview["ready_for_research"]
+
+
 def test_preview_uses_approved_15_x_packaging_fallback():
     preview = build_coolbox_preview(_product())
     fields = {row["field"]: row for row in preview["fields"]}
