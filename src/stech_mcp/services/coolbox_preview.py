@@ -463,6 +463,29 @@ def build_coolbox_preview(
 
     _apply_enrichments(fields, enrichments)
 
+    # Los dos ejemplos completos de la plantilla real "Laptops-All in one"
+    # dejan estos campos vacíos. Por tanto, si no hay una fuente confiable,
+    # no deben convertirse artificialmente en trabajo pendiente ni bloquear
+    # el readiness. Si luego existe enrichment aprobado, este ya fue aplicado
+    # arriba y el valor real se conserva.
+    for optional_name in (
+        "Memoria unificada",
+        "Sistema de refrigeración",
+        "Duración de la batería",
+        "Capacidad de disco eMMC ",
+        "Consumo",
+        "Tipo de enchufe",
+    ):
+        current = fields[optional_name]
+        if current.get("value") is None and str(current.get("status") or "").upper() == "RESEARCH_REQUIRED":
+            fields[optional_name] = _field(
+                None,
+                "OPTIONAL",
+                "Coolbox template Laptops-All in one",
+                "OPTIONAL",
+                note="Campo vacío en filas completas de referencia; no bloquear sin evidencia adicional.",
+            )
+
     for optional in ("CROSS 1", "CROSS 2", "CROSS 3"):
         fields[optional] = _field(None, "OPTIONAL", "Coolbox")
     for seller_input in ("Precio Lista (Full )", "Precio Base (Especial)", "Fecha de Inicio", "Fecha Fin", "Stock"):
