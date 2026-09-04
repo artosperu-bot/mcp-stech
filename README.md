@@ -4,7 +4,7 @@ Servidor MCP de S-TECH para conectar ChatGPT/agentes con SQL Server y los contra
 
 ## Contrato real reutilizado de SCR V8
 
-STECH MCP **no crea un catálogo paralelo**. Lee directamente la estructura operativa existente:
+STECH MCP **no crea un catálogo operativo paralelo**. Lee directamente la estructura existente:
 
 - Base operativa: `DB_DISTRIBUIDORES`
 - Configuración: reutiliza `DIST_SQL_*` de `scr/v8-identity`, con override opcional `STECH_SQL_*`
@@ -13,7 +13,7 @@ STECH MCP **no crea un catálogo paralelo**. Lee directamente la estructura oper
 - Identificadores: `ean`, `upc`, `mini_codigo`, `codigo_externo`
 - Histórico MCP: `dbo.V_HST_PRODUCTO_OBSERVACION_V8`
 
-La base separada `STECH_MCP` se usa únicamente para evidencia, enrichment, reglas de empaque y metadatos de marketplaces. No duplica el catálogo, stock ni histórico operativo.
+La base separada `STECH_MCP` se usa para Product Master, evidencia, enrichment, reglas, drafts, metadata de imágenes y auditoría. No reemplaza el catálogo, stock ni histórico operativo.
 
 ## Jerarquía de fuentes
 
@@ -56,23 +56,32 @@ Herramientas operativas existentes:
 - `coolbox_preview`
 - `packaging_estimate_weight`
 - `packaging_validate_dimensions`
-
-Herramientas agregadas en la Fase 1 multicanal:
-
 - `packaging_rule_get(screen_inches, category="LAPTOP")`
 - `packaging_resolve(partnumber, category="LAPTOP")`
 - `marketplace_preview(partnumber, marketplace, category="LAPTOP")`
 
-`marketplace_preview` soporta en esta fase únicamente `COOLBOX/LAPTOP`. **Falabella/Saga y VTEX no tienen mappings inventados**: se incorporarán después de revisar sus plantillas/esquemas reales y sus validaciones por categoría.
+Product Workspace V1 agrega:
+
+- `product_prepare(partnumber, category="LAPTOP")`
+- `product_master_get(partnumber)`
+- `product_readiness_get(partnumber)`
+- `channel_draft_get(partnumber, marketplace="COOLBOX")`
+
+`product_prepare` es el punto único de preparación usado tanto por ChatGPT como por SCR. En V1 persiste el Product Master, resuelve el empaque, calcula readiness, genera un draft Coolbox versionado de 81 campos y registra auditoría. **No publica en ningún marketplace.**
+
+`marketplace_preview` soporta actualmente `COOLBOX/LAPTOP`. **Falabella/Saga y VTEX no tienen mappings inventados**: se incorporan después de revisar sus plantillas/esquemas reales y validaciones por categoría.
 
 No existe `execute_sql` libre. Las consultas usan contratos controlados y parámetros.
 
 ## Instalación / actualización
 
+Para Product Workspace V1:
+
 ```powershell
 cd C:\DESAROLLO\mcp-stech
-git checkout feat/stech-mcp-v1
-git pull
+git fetch origin
+git checkout feat/product-workspace-v1
+git pull origin feat/product-workspace-v1
 .\.venv\Scripts\Activate.ps1
 pip install -e ".[dev]"
 ```
@@ -99,37 +108,71 @@ No subas `.env` ni credenciales a GitHub.
 
 ## Migraciones de `STECH_MCP`
 
-La Fase 1 requiere ejecutar las migraciones en orden.
-
-Primera instalación:
+Ejecutar en orden:
 
 ```text
 sql/001_create_stech_mcp.sql
 sql/002_multichannel_enrichment_phase1.sql
+sql/003_product_workspace_v1.sql
 ```
 
-Si `001_create_stech_mcp.sql` ya fue ejecutada anteriormente, basta ejecutar `002_multichannel_enrichment_phase1.sql`.
+Si `001` y `002` ya están aplicadas, para esta fase basta:
 
-En SSMS con **SQLCMD Mode** se puede ejecutar desde la raíz del repo:
-
-```sql
-:r .\sql\002_multichannel_enrichment_phase1.sql
+```powershell
+sqlcmd -S PC020 -E -C -i ".\sql\003_product_workspace_v1.sql"
 ```
 
-La migración es aditiva e idempotente. Crea `packaging_rule` y metadatos genéricos de marketplace, y registra `LAPTOP_15_X_DEFAULT`. No elimina `coolbox_template_field` ni modifica tablas de negocio de `DB_DISTRIBUIDORES`.
+`003_product_workspace_v1.sql` es aditiva e idempotente. Crea:
+
+- `dbo.product_master`
+- `dbo.channel_draft`
+- `dbo.channel_draft_field`
+- `dbo.product_image`
+- `dbo.product_audit_event`
+- `dbo.V_PRODUCT_WORKSPACE_V1`
+
+No elimina tablas operativas ni publica productos.
+
+Validación de objetos:
+
+```powershell
+sqlcmd -S PC020 -E -C -Q "SELECT OBJECT_ID('STECH_MCP.dbo.product_master') AS product_master_id, OBJECT_ID('STECH_MCP.dbo.channel_draft') AS channel_draft_id, OBJECT_ID('STECH_MCP.dbo.product_image') AS product_image_id, OBJECT_ID('STECH_MCP.dbo.V_PRODUCT_WORKSPACE_V1') AS workspace_view_id;"
+```
+
+Los cuatro valores deben ser distintos de `NULL`.
+
+## Aceptación real de Product Workspace V1
+
+Después de aplicar `003` y reiniciar `stech-mcp`, el servidor debe exponer 14 herramientas: las 10 anteriores más las 4 herramientas de Product Workspace.
+
+Preparar el producto real desde un cliente MCP o desde SCR debe ejecutar:
+
+```text
+product_prepare(partnumber="82YU00XYLM", category="LAPTOP")
+```
+
+El resultado persistido esperado incluye:
+
+```text
+partnumber = 82YU00XYLM
+brand = LENOVO
+package = 33 x 54 x 7 cm
+package_weight_g = 2500
+package_status = ESTIMATED
+package_source = REGLA_STECH_EMPAQUE
+package_rule_code = LAPTOP_15_X_DEFAULT
+coolbox_field_count = 81
+```
 
 Validación SQL:
 
-```sql
-SELECT rule_code, category_code, screen_min_inches, screen_max_inches,
-       width_cm, length_cm, height_cm, weight_g, priority, enabled, source_code
-FROM STECH_MCP.dbo.packaging_rule
-WHERE rule_code = N'LAPTOP_15_X_DEFAULT';
+```powershell
+sqlcmd -S PC020 -E -C -Q "SELECT partnumber, brand, model, readiness_state, package_width_cm, package_length_cm, package_height_cm, package_weight_g, package_status, coolbox_field_count FROM STECH_MCP.dbo.V_PRODUCT_WORKSPACE_V1 WHERE partnumber=N'82YU00XYLM';"
 ```
 
-Esperado: `LAPTOP`, `15.00`, `16.00`, `33`, `54`, `7`, `2500`, habilitada y fuente `REGLA_STECH_EMPAQUE`.
+La vista SCR lee este estado directamente desde SQL Server para que la previsualización sea rápida. El botón **Preparar / Actualizar** llama al mismo `product_prepare` del MCP y luego vuelve a leer el estado persistido; no existe una segunda lógica de preparación dentro de SCR.
 
-## Prueba contra producto real
+## Prueba base contra producto real
 
 ```powershell
 stech-mcp-check 82YU00XYLM
@@ -137,9 +180,7 @@ stech-mcp-check 82YU00XYLM
 
 Debe mantener `sql_source_status=ok` y encontrar el producto desde `dbo.V_PRD_PRODUCTO_ACTUAL`.
 
-Después de aplicar la migración y reiniciar `stech-mcp`, el endpoint público debe exponer 10 herramientas: las 7 anteriores más `packaging_rule_get`, `packaging_resolve` y `marketplace_preview`.
-
-Para `82YU00XYLM` (15.6 pulgadas), mientras no exista un empaque oficial completo aprobado en `product_enrichment`, `packaging_resolve` debe devolver:
+Mientras no exista un empaque oficial completo aprobado, `packaging_resolve("82YU00XYLM")` debe devolver:
 
 ```json
 {
@@ -163,7 +204,7 @@ Para `82YU00XYLM` (15.6 pulgadas), mientras no exista un empaque oficial complet
 pytest
 ```
 
-GitHub Actions ejecuta la misma suite para el PR.
+GitHub Actions ejecuta la misma suite para el PR de MCP. SCR mantiene su propia suite de backend, JavaScript, PowerShell y empaquetado Windows.
 
 ## Roadmap multicanal
 
