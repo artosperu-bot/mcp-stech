@@ -247,6 +247,82 @@ class ProductMasterRepository:
         finally:
             connection.close()
 
+    def approve_latest_draft(
+        self,
+        *,
+        partnumber: str,
+        marketplace: str,
+        approved_by: str,
+        note: str | None = None,
+    ) -> dict[str, Any]:
+        normalized = _normalize_partnumber(partnumber)
+        market = str(marketplace or "").strip().upper()
+        actor = str(approved_by or "").strip()
+        approval_note = str(note).strip() if note is not None else None
+        if not normalized or not market or not actor:
+            raise ValueError("partnumber, marketplace and approved_by are required")
+
+        connection = self.connection_factory()
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                """
+                SELECT TOP (1)
+                    channel_draft_id,
+                    draft_version,
+                    status,
+                    required_missing_count,
+                    estimated_count
+                FROM dbo.channel_draft WITH (UPDLOCK, HOLDLOCK)
+                WHERE partnumber = ? AND marketplace = ?
+                ORDER BY draft_version DESC, channel_draft_id DESC
+                """,
+                normalized,
+                market,
+            )
+            latest = cursor.fetchone()
+            if latest is None:
+                return {
+                    "found": False,
+                    "partnumber": normalized,
+                    "marketplace": market,
+                    "approval_status": None,
+                }
+
+            channel_draft_id = int(latest[0])
+            draft_version = int(latest[1])
+            cursor.execute(
+                """
+                UPDATE dbo.channel_draft
+                SET approval_status = N'APROBADO',
+                    approved_by = ?,
+                    approved_at = SYSUTCDATETIME(),
+                    approval_note = ?,
+                    updated_at = SYSUTCDATETIME()
+                WHERE channel_draft_id = ?
+                """,
+                actor,
+                approval_note,
+                channel_draft_id,
+            )
+            connection.commit()
+            return {
+                "found": True,
+                "partnumber": normalized,
+                "marketplace": market,
+                "channel_draft_id": channel_draft_id,
+                "draft_version": draft_version,
+                "approval_status": "APROBADO",
+                "approved_by": actor,
+                "approval_note": approval_note,
+            }
+        except Exception:
+            if hasattr(connection, "rollback"):
+                connection.rollback()
+            raise
+        finally:
+            connection.close()
+
     def get_latest_draft(self, partnumber: str, marketplace: str) -> dict[str, Any] | None:
         normalized = _normalize_partnumber(partnumber)
         market = str(marketplace or "").strip().upper()
@@ -258,7 +334,8 @@ class ProductMasterRepository:
                 SELECT TOP (1)
                     channel_draft_id, partnumber, marketplace, template_name,
                     draft_version, status, field_count, required_missing_count,
-                    estimated_count, payload_json, created_at, updated_at
+                    estimated_count, payload_json, approval_status, approved_by,
+                    approved_at, approval_note, created_at, updated_at
                 FROM dbo.channel_draft
                 WHERE partnumber = ? AND marketplace = ?
                 ORDER BY draft_version DESC, channel_draft_id DESC
