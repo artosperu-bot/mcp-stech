@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from stech_mcp.db.product_master_repository import ProductMasterRepository
 
 
@@ -68,7 +70,12 @@ def test_upsert_master_is_parameterized_and_normalizes_partnumber():
 
 
 def test_replace_draft_persists_exactly_81_coolbox_fields_with_parameters():
-    cursor = FakeCursor(fetchone_values=[(3,), (99,)])
+    cursor = FakeCursor(
+        fetchone_values=[
+            (55, 3, "LISTO_PARA_REVISAR", 0, 0, 0, '{"fields":[]}'),
+            (99,),
+        ]
+    )
     conn = FakeConnection(cursor)
     repo = ProductMasterRepository(lambda: conn)
     fields = [
@@ -86,6 +93,7 @@ def test_replace_draft_persists_exactly_81_coolbox_fields_with_parameters():
     assert result["channel_draft_id"] == 99
     assert result["draft_version"] == 4
     assert result["field_count"] == 81
+    assert result["reused"] is False
     field_inserts = [(sql, params) for sql, params in cursor.executions if "INSERT dbo.channel_draft_field" in sql]
     assert len(field_inserts) == 81
     assert field_inserts[0][1][2] == "F0"
@@ -95,7 +103,7 @@ def test_replace_draft_persists_exactly_81_coolbox_fields_with_parameters():
 
 
 def test_replace_draft_counts_missing_and_estimated_fields():
-    cursor = FakeCursor(fetchone_values=[(0,), (7,)])
+    cursor = FakeCursor(fetchone_values=[None, (7,)])
     conn = FakeConnection(cursor)
     repo = ProductMasterRepository(lambda: conn)
     fields = [
@@ -113,6 +121,47 @@ def test_replace_draft_counts_missing_and_estimated_fields():
 
     assert result["required_missing_count"] == 1
     assert result["estimated_count"] == 1
+    assert result["draft_version"] == 1
+    assert result["reused"] is False
+
+
+def test_replace_draft_reuses_identical_latest_payload_instead_of_creating_version():
+    fields = [
+        {"field": "Marca", "value": "Lenovo", "status": "DISTRIBUTOR"},
+        {"field": "Precio Lista", "value": None, "status": "MARKETPLACE_INPUT"},
+    ]
+    payload = {"fields": fields}
+    payload_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str)
+    cursor = FakeCursor(
+        fetchone_values=[
+            (55, 8, "LISTO_PARA_REVISAR", 2, 0, 0, payload_json),
+        ]
+    )
+    conn = FakeConnection(cursor)
+    repo = ProductMasterRepository(lambda: conn)
+
+    result = repo.replace_draft(
+        partnumber="82YU00XYLM",
+        marketplace="COOLBOX",
+        template_name="Laptops-All in one",
+        payload=payload,
+    )
+
+    assert result == {
+        "channel_draft_id": 55,
+        "partnumber": "82YU00XYLM",
+        "marketplace": "COOLBOX",
+        "template_name": "Laptops-All in one",
+        "draft_version": 8,
+        "status": "LISTO_PARA_REVISAR",
+        "field_count": 2,
+        "required_missing_count": 0,
+        "estimated_count": 0,
+        "reused": True,
+    }
+    assert not any("INSERT dbo.channel_draft (" in sql for sql, _ in cursor.executions)
+    assert not any("INSERT dbo.channel_draft_field" in sql for sql, _ in cursor.executions)
+    assert conn.closed is True
 
 
 def test_add_audit_event_is_parameterized():
