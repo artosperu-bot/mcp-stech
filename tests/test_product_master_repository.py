@@ -54,7 +54,7 @@ class FakeConnection:
         self.closed = True
 
 
-def test_upsert_master_is_parameterized_and_normalizes_partnumber():
+def test_upsert_master_is_parameterized_normalized_and_serialized_per_partnumber():
     cursor = FakeCursor(rowcount=1)
     conn = FakeConnection(cursor)
     repo = ProductMasterRepository(lambda: conn)
@@ -63,6 +63,8 @@ def test_upsert_master_is_parameterized_and_normalizes_partnumber():
 
     joined_sql = "\n".join(sql for sql, _ in cursor.executions)
     assert "82YU00XYLM" not in joined_sql
+    assert "UPDLOCK" in joined_sql
+    assert "HOLDLOCK" in joined_sql
     assert cursor.executions[0][1][0] == "82YU00XYLM"
     assert result["partnumber"] == "82YU00XYLM"
     assert conn.committed is True
@@ -94,6 +96,8 @@ def test_replace_draft_persists_exactly_81_coolbox_fields_with_parameters():
     assert result["draft_version"] == 4
     assert result["field_count"] == 81
     assert result["reused"] is False
+    assert "UPDLOCK" in cursor.executions[0][0]
+    assert "HOLDLOCK" in cursor.executions[0][0]
     field_inserts = [(sql, params) for sql, params in cursor.executions if "INSERT dbo.channel_draft_field" in sql]
     assert len(field_inserts) == 81
     assert field_inserts[0][1][2] == "F0"
