@@ -168,6 +168,35 @@ def test_replace_draft_reuses_identical_latest_payload_instead_of_creating_versi
     assert conn.closed is True
 
 
+def test_approve_latest_draft_marks_specific_latest_version_and_audits_actor():
+    cursor = FakeCursor(
+        fetchone_values=[
+            (55, 8, "LISTO_PARA_REVISAR", 0, 0),
+        ]
+    )
+    conn = FakeConnection(cursor)
+    repo = ProductMasterRepository(lambda: conn)
+
+    result = repo.approve_latest_draft(
+        partnumber="82yu00xylm",
+        marketplace="coolbox",
+        approved_by="SCR_UI",
+        note="Revisado visualmente",
+    )
+
+    assert result["found"] is True
+    assert result["partnumber"] == "82YU00XYLM"
+    assert result["marketplace"] == "COOLBOX"
+    assert result["channel_draft_id"] == 55
+    assert result["draft_version"] == 8
+    assert result["approval_status"] == "APROBADO"
+    update_calls = [(sql, params) for sql, params in cursor.executions if "approval_status" in sql and "UPDATE dbo.channel_draft" in sql]
+    assert len(update_calls) == 1
+    assert update_calls[0][1] == ("SCR_UI", "Revisado visualmente", 55)
+    assert conn.committed is True
+    assert conn.closed is True
+
+
 def test_add_audit_event_is_parameterized():
     cursor = FakeCursor()
     conn = FakeConnection(cursor)
