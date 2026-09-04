@@ -47,6 +47,19 @@ def product_search(query: str, limit: int = 20) -> dict[str, Any]:
 
 
 @mcp.tool()
+def product_history(partnumber: str, limit: int = 25) -> dict[str, Any]:
+    """Obtiene observaciones reales V8 del producto: fecha, stock, precio y ubicaciones."""
+    rows = product_repository.history(partnumber, limit=limit)
+    return {
+        "partnumber": partnumber.strip(),
+        "count": len(rows),
+        "observations": rows,
+        "source_view": "dbo.V_HST_PRODUCTO_OBSERVACION_V8",
+        "synthetic_intervals": False,
+    }
+
+
+@mcp.tool()
 def packaging_estimate_weight(
     screen_inches: float,
     device_weight_kg: float,
