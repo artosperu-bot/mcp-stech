@@ -142,6 +142,39 @@ def _package_dimensions(screen_inches: float) -> tuple[float, float, float]:
     return 9.0, 37.0, 61.0
 
 
+def _fallback_package(screen_inches: float, device_weight: float) -> dict[str, Any]:
+    if 15.0 <= screen_inches < 16.0:
+        return {
+            "width_cm": 33,
+            "length_cm": 54,
+            "height_cm": 7,
+            "weight_g": 2500,
+            "status": "ESTIMATED",
+            "method": "ESTIMATED",
+            "source": "REGLA_STECH_EMPAQUE",
+            "rule_code": "LAPTOP_15_X_DEFAULT",
+            "confidence_grade": "E",
+        }
+
+    package_weight = estimate_package_weight(
+        screen_inches=Decimal(str(screen_inches)),
+        device_weight_kg=Decimal(str(device_weight)),
+        is_gaming=False,
+    )
+    alto, ancho, largo = _package_dimensions(screen_inches)
+    return {
+        "width_cm": ancho,
+        "length_cm": largo,
+        "height_cm": alto,
+        "weight_g": int(package_weight * 1000),
+        "status": "ESTIMATED",
+        "method": "ESTIMATED",
+        "source": "Regla de empaque S-TECH",
+        "rule_code": None,
+        "confidence_grade": "E",
+    }
+
+
 def _title(product: dict[str, Any], specs: dict[str, Any], screen_inches: float | None, ram: str | None, color: str | None) -> str | None:
     brand = str(product.get("marca") or "").title()
     model = str(specs.get("MODELO") or "").strip()
@@ -174,7 +207,11 @@ def _gamut(processor: str | None) -> str | None:
     return None
 
 
-def build_coolbox_preview(product: dict[str, Any]) -> dict[str, Any]:
+def build_coolbox_preview(
+    product: dict[str, Any],
+    *,
+    package: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     specs = _load_specs(product)
     name = str(product.get("nombre") or "")
     source = "DB_DISTRIBUIDORES.dbo.V_PRD_PRODUCTO_ACTUAL / DELTRON"
@@ -301,17 +338,27 @@ def build_coolbox_preview(product: dict[str, Any]) -> dict[str, Any]:
     if info:
         fields["Información adicional"] = _field(info, "DERIVED", source, "DERIVED")
 
-    if screen_inches is not None and device_weight is not None:
-        package_weight = estimate_package_weight(
-            screen_inches=Decimal(str(screen_inches)),
-            device_weight_kg=Decimal(str(device_weight)),
-            is_gaming=False,
-        )
-        fields["Peso (g)"] = _field(int(package_weight * 1000), "ESTIMATED", "Regla de empaque S-TECH", "ESTIMATED", "Usar solo si no aparece peso de caja confiable")
-        alto, ancho, largo = _package_dimensions(screen_inches)
-        fields["Alto (cm)"] = _field(alto, "ESTIMATED", "Regla de empaque S-TECH", "ESTIMATED")
-        fields["Ancho (cm)"] = _field(ancho, "ESTIMATED", "Regla de empaque S-TECH", "ESTIMATED")
-        fields["Largo  (cm)"] = _field(largo, "ESTIMATED", "Regla de empaque S-TECH", "ESTIMATED")
+    resolved_package = package
+    if resolved_package is None and screen_inches is not None and device_weight is not None:
+        resolved_package = _fallback_package(screen_inches, device_weight)
+
+    if resolved_package is not None:
+        package_source = str(resolved_package.get("source") or "STECH_MCP")
+        package_status = str(resolved_package.get("status") or resolved_package.get("method") or "ESTIMATED")
+        package_method = str(resolved_package.get("method") or package_status)
+        rule_code = resolved_package.get("rule_code")
+        confidence = resolved_package.get("confidence_grade")
+        notes = []
+        if rule_code:
+            notes.append(f"rule_code={rule_code}")
+        if confidence:
+            notes.append(f"confidence={confidence}")
+        package_note = " | ".join(notes) or None
+
+        fields["Peso (g)"] = _field(resolved_package.get("weight_g"), package_status, package_source, package_method, package_note)
+        fields["Alto (cm)"] = _field(resolved_package.get("height_cm"), package_status, package_source, package_method, package_note)
+        fields["Ancho (cm)"] = _field(resolved_package.get("width_cm"), package_status, package_source, package_method, package_note)
+        fields["Largo  (cm)"] = _field(resolved_package.get("length_cm"), package_status, package_source, package_method, package_note)
 
     for optional in ("CROSS 1", "CROSS 2", "CROSS 3"):
         fields[optional] = _field(None, "OPTIONAL", "Coolbox")
