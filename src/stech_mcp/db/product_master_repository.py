@@ -133,8 +133,12 @@ class ProductMasterRepository:
 
         fields = list(payload.get("fields") or [])
         field_count = len(fields)
-        required_missing_count = sum(1 for field in fields if str(field.get("status") or "").upper() == "RESEARCH_REQUIRED")
-        estimated_count = sum(1 for field in fields if str(field.get("status") or "").upper() == "ESTIMATED")
+        required_missing_count = sum(
+            1 for field in fields if str(field.get("status") or "").upper() == "RESEARCH_REQUIRED"
+        )
+        estimated_count = sum(
+            1 for field in fields if str(field.get("status") or "").upper() == "ESTIMATED"
+        )
         status = "FALTAN_DATOS" if required_missing_count else "LISTO_PARA_REVISAR"
         payload_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str)
 
@@ -143,17 +147,39 @@ class ProductMasterRepository:
             cursor = connection.cursor()
             cursor.execute(
                 """
-                SELECT ISNULL(MAX(draft_version), 0)
+                SELECT TOP (1)
+                    channel_draft_id,
+                    draft_version,
+                    status,
+                    field_count,
+                    required_missing_count,
+                    estimated_count,
+                    payload_json
                 FROM dbo.channel_draft
                 WHERE partnumber = ? AND marketplace = ?
+                ORDER BY draft_version DESC, channel_draft_id DESC
                 """,
                 normalized,
                 market,
             )
-            previous_row = cursor.fetchone()
-            previous_version = int(previous_row[0]) if previous_row else 0
-            draft_version = previous_version + 1
+            latest = cursor.fetchone()
+            previous_version = int(latest[1]) if latest else 0
 
+            if latest and latest[6] == payload_json:
+                return {
+                    "channel_draft_id": int(latest[0]),
+                    "partnumber": normalized,
+                    "marketplace": market,
+                    "template_name": template_name,
+                    "draft_version": previous_version,
+                    "status": latest[2],
+                    "field_count": int(latest[3]),
+                    "required_missing_count": int(latest[4]),
+                    "estimated_count": int(latest[5]),
+                    "reused": True,
+                }
+
+            draft_version = previous_version + 1
             cursor.execute(
                 """
                 INSERT dbo.channel_draft (
@@ -208,6 +234,7 @@ class ProductMasterRepository:
                 "field_count": field_count,
                 "required_missing_count": required_missing_count,
                 "estimated_count": estimated_count,
+                "reused": False,
             }
         except Exception:
             if hasattr(connection, "rollback"):
@@ -282,7 +309,9 @@ class ProductMasterRepository:
         detail: dict[str, Any] | None = None,
     ) -> None:
         normalized = _normalize_partnumber(partnumber)
-        detail_json = None if detail is None else json.dumps(detail, ensure_ascii=False, separators=(",", ":"), default=str)
+        detail_json = None if detail is None else json.dumps(
+            detail, ensure_ascii=False, separators=(",", ":"), default=str
+        )
         connection = self.connection_factory()
         try:
             cursor = connection.cursor()
