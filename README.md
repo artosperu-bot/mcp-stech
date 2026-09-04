@@ -18,6 +18,7 @@ La rama `feat/stech-mcp-v1` ya incluye:
   - `product_get`
   - `packaging_estimate_weight`
   - `packaging_validate_dimensions`
+- comando de prueba directa `stech-mcp-check <PARTNUMBER>`;
 - tests automáticos y GitHub Actions CI.
 
 ## Arquitectura
@@ -126,13 +127,36 @@ sql/001_create_stech_mcp.sql
 
 Esto crea `STECH_MCP` y las tablas de enriquecimiento/evidencia. No modifica tablas operativas del ERP.
 
-## 3. Probar
+## 3. Probar conexión SQL + producto real
+
+Después de crear `.env` y `dbo.V_MCP_PRODUCTO`:
+
+```powershell
+stech-mcp-check 82YU00XYLM
+```
+
+Salida esperada si SQL y la vista están correctos:
+
+```json
+{
+  "sql_source_status": "ok",
+  "partnumber": "82YU00XYLM",
+  "found": true,
+  "product": {
+    "partnumber": "82YU00XYLM"
+  }
+}
+```
+
+Si `found` es `false`, la conexión funciona pero ese Part Number no existe en la vista. Si hay error de conexión, revisar `.env`, ODBC Driver 18, permisos y conectividad con SQL Server.
+
+## 4. Ejecutar tests
 
 ```powershell
 pytest
 ```
 
-## 4. Levantar MCP local por stdio
+## 5. Levantar MCP local por stdio
 
 ```powershell
 stech-mcp
@@ -144,7 +168,7 @@ También se puede ejecutar:
 python -m stech_mcp.server
 ```
 
-## 5. Levantar por Streamable HTTP (preparación para túnel)
+## 6. Levantar por Streamable HTTP (preparación para túnel)
 
 Cambiar:
 
