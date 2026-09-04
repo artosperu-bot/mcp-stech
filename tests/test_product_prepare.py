@@ -121,6 +121,10 @@ def test_prepare_persists_product_master_package_and_81_field_coolbox_draft():
 
     assert result["found"] is True
     assert product_repo.calls == ["82YU00XYLM"]
+    assert result["package"]["width_cm"] == 33
+    assert isinstance(result["package"]["width_cm"], int)
+    assert result["package"]["length_cm"] == 54
+    assert result["package"]["height_cm"] == 7
     assert result["package"]["weight_g"] == 2500
     assert result["package"]["rule_code"] == "LAPTOP_15_X_DEFAULT"
     assert result["coolbox_preview"]["field_count"] == 81
