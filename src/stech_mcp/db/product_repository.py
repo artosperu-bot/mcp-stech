@@ -19,12 +19,17 @@ class ProductRepository:
             raise ValueError("partnumber is required")
 
         connection = self._connection_factory()
-        cursor = connection.cursor()
-        sql = f"SELECT TOP (1) * FROM {self._view_name} WHERE partnumber = ?"
-        cursor.execute(sql, partnumber.strip())
-        row = cursor.fetchone()
-        if row is None:
-            return None
+        try:
+            cursor = connection.cursor()
+            sql = f"SELECT TOP (1) * FROM {self._view_name} WHERE partnumber = ?"
+            cursor.execute(sql, partnumber.strip())
+            row = cursor.fetchone()
+            if row is None:
+                return None
 
-        columns = [item[0] for item in cursor.description]
-        return dict(zip(columns, row, strict=False))
+            columns = [item[0] for item in cursor.description]
+            return dict(zip(columns, row, strict=False))
+        finally:
+            close = getattr(connection, "close", None)
+            if callable(close):
+                close()
