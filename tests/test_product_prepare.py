@@ -15,8 +15,16 @@ class FakeProductRepository:
 
 
 class FakeEnrichmentRepository:
+    def __init__(self, rows=None):
+        self.rows = list(rows or [])
+        self.calls = []
+
     def get_approved(self, partnumber, field_codes=None):
-        return []
+        self.calls.append((partnumber, tuple(field_codes) if field_codes else None))
+        if field_codes:
+            wanted = set(field_codes)
+            return [row for row in self.rows if row.get("field_code") in wanted]
+        return list(self.rows)
 
 
 class FakePackagingRuleRepository:
@@ -113,6 +121,36 @@ def test_prepare_persists_product_master_package_and_81_field_coolbox_draft():
     assert master_repo.snapshots[0]["package_height_cm"] == Decimal("7.00")
     assert master_repo.snapshots[0]["package_weight_g"] == 2500
     assert master_repo.audit[0]["event_type"] == "PRODUCT_PREPARED"
+
+
+def test_prepare_applies_all_approved_enrichments_to_persisted_coolbox_draft():
+    enrichments = FakeEnrichmentRepository([
+        {
+            "field_code": "ssd_capacity_gb",
+            "value_number": Decimal("512"),
+            "value_text": None,
+            "unit": "GB",
+            "method": "VERIFIED",
+            "confidence_grade": "A1",
+            "is_approved": True,
+        }
+    ])
+    master_repo = FakeProductMasterRepository()
+    service = ProductPrepareService(
+        product_repository=FakeProductRepository(_product()),
+        enrichment_repository=enrichments,
+        packaging_rule_repository=FakePackagingRuleRepository(),
+        product_master_repository=master_repo,
+    )
+
+    result = service.prepare("82YU00XYLM")
+
+    fields = {row["field"]: row for row in result["coolbox_preview"]["fields"]}
+    assert fields["Capacidad de disco sólido (SSD)"]["value"] == "512 GB"
+    assert fields["Capacidad de disco sólido (SSD)"]["status"] == "VERIFIED"
+    persisted_fields = {row["field"]: row for row in master_repo.drafts[0]["payload"]["fields"]}
+    assert persisted_fields["Capacidad de disco sólido (SSD)"]["value"] == "512 GB"
+    assert ("82YU00XYLM", None) in enrichments.calls
 
 
 def test_prepare_missing_product_does_not_persist_anything():
