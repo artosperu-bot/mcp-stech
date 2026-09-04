@@ -26,12 +26,23 @@ def stech_health() -> dict[str, Any]:
 
 @mcp.tool()
 def product_get(partnumber: str) -> dict[str, Any]:
-    """Obtiene un producto del ERP S-TECH por Part Number desde la vista segura configurada."""
+    """Obtiene un producto real de V8 por Part Number desde V_PRD_PRODUCTO_ACTUAL."""
     product = product_repository.get_by_partnumber(partnumber)
     return {
         "found": product is not None,
         "partnumber": partnumber.strip(),
         "product": product,
+    }
+
+
+@mcp.tool()
+def product_search(query: str, limit: int = 20) -> dict[str, Any]:
+    """Busca productos V8 por PN, EAN, UPC, mini código, código externo o nombre."""
+    rows = product_repository.search(query, limit=limit)
+    return {
+        "query": query.strip(),
+        "count": len(rows),
+        "products": rows,
     }
 
 
