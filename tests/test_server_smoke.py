@@ -16,3 +16,4 @@ def test_server_module_imports_and_exposes_initial_tools():
     assert callable(server.product_master_get)
     assert callable(server.product_readiness_get)
     assert callable(server.channel_draft_get)
+    assert callable(server.product_approve)
