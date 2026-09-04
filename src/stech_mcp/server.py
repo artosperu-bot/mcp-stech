@@ -17,6 +17,7 @@ from stech_mcp.domain.packaging_rules import estimate_package_weight, validate_p
 from stech_mcp.services.coolbox_preview import _load_specs, _screen, build_coolbox_preview
 from stech_mcp.services.marketplace_preview import build_marketplace_preview
 from stech_mcp.services.product_approval import ProductApprovalService
+from stech_mcp.services.product_field_verification import ProductFieldVerificationService
 from stech_mcp.services.product_prepare import ProductPrepareService
 from stech_mcp.tools.core import health_snapshot
 
@@ -34,6 +35,7 @@ product_prepare_service = ProductPrepareService(
     product_master_repository=product_master_repository,
 )
 product_approval_service = ProductApprovalService(product_master_repository)
+product_field_verification_service = ProductFieldVerificationService(enrichment_repository)
 
 mcp = MCPServer("STECH MCP")
 
@@ -124,17 +126,19 @@ def product_history(partnumber: str, limit: int = 25) -> dict[str, Any]:
 
 @mcp.tool()
 def coolbox_preview(partnumber: str) -> dict[str, Any]:
-    """Prepara las 81 columnas Coolbox usando ficha maestra y empaque con precedencia oficial > regla."""
-    product = product_repository.get_by_partnumber(partnumber)
+    """Prepara las 81 columnas Coolbox usando Deltron + enriquecimientos aprobados + empaque resuelto."""
+    normalized = partnumber.strip().upper()
+    product = product_repository.get_by_partnumber(normalized)
     if product is None:
         return {
             "found": False,
-            "partnumber": partnumber.strip(),
+            "partnumber": normalized,
             "template": "Laptops-All in one",
             "fields": [],
         }
     package = _resolve_product_package(product, "LAPTOP")
-    preview = build_coolbox_preview(product, package=package)
+    enrichments = enrichment_repository.get_approved(normalized)
+    preview = build_coolbox_preview(product, package=package, enrichments=enrichments)
     return {"found": True, **preview}
 
 
@@ -191,22 +195,23 @@ def packaging_rule_get(screen_inches: float, category: str = "LAPTOP") -> dict[s
 @mcp.tool()
 def packaging_resolve(partnumber: str, category: str = "LAPTOP") -> dict[str, Any]:
     """Resuelve empaque: primero enrichment aprobado; si falta, aplica regla S-TECH compatible."""
-    product = product_repository.get_by_partnumber(partnumber)
+    normalized = partnumber.strip().upper()
+    product = product_repository.get_by_partnumber(normalized)
     if product is None:
-        return {"found": False, "partnumber": partnumber.strip(), "package": None}
+        return {"found": False, "partnumber": normalized, "package": None}
 
     screen_inches = _product_screen_inches(product)
     if screen_inches is None:
         return {
             "found": True,
-            "partnumber": partnumber.strip(),
+            "partnumber": normalized,
             "package": None,
             "reason": "screen_inches_not_found",
         }
 
     try:
         package = resolve_package(
-            partnumber=partnumber.strip(),
+            partnumber=normalized,
             category_code=category.strip().upper(),
             screen_inches=screen_inches,
             enrichment_repository=enrichment_repository,
@@ -217,7 +222,7 @@ def packaging_resolve(partnumber: str, category: str = "LAPTOP") -> dict[str, An
 
     return {
         "found": True,
-        "partnumber": partnumber.strip(),
+        "partnumber": normalized,
         "screen_inches": screen_inches,
         "package": package,
         "reason": None if package is not None else "no_package_rule_or_approved_enrichment",
@@ -227,11 +232,12 @@ def packaging_resolve(partnumber: str, category: str = "LAPTOP") -> dict[str, An
 @mcp.tool()
 def marketplace_preview(partnumber: str, marketplace: str, category: str = "LAPTOP") -> dict[str, Any]:
     """Genera preview multicanal; Fase 1 habilita COOLBOX/LAPTOP con ficha maestra reutilizable."""
-    product = product_repository.get_by_partnumber(partnumber)
+    normalized = partnumber.strip().upper()
+    product = product_repository.get_by_partnumber(normalized)
     if product is None:
         return {
             "found": False,
-            "partnumber": partnumber.strip(),
+            "partnumber": normalized,
             "marketplace": marketplace.strip().upper(),
             "category": category.strip().upper(),
             "fields": [],
@@ -322,6 +328,47 @@ def product_approve(
         approved_by=approved_by,
         note=note,
     )
+
+
+@mcp.tool()
+def product_field_verify(
+    partnumber: str,
+    field_code: str,
+    confidence_grade: str,
+    source_url: str,
+    source_type: str,
+    source_partnumber: str,
+    evidence_text: str,
+    value_text: str | None = None,
+    value_number: float | None = None,
+    unit: str | None = None,
+) -> dict[str, Any]:
+    """Guarda un dato técnico como VERIFIED solo junto con evidencia trazable y reglas de coincidencia de variante."""
+    return product_field_verification_service.verify(
+        partnumber=partnumber,
+        field_code=field_code,
+        value_text=value_text,
+        value_number=value_number,
+        unit=unit,
+        confidence_grade=confidence_grade,
+        source_url=source_url,
+        source_type=source_type,
+        source_partnumber=source_partnumber,
+        evidence_text=evidence_text,
+    )
+
+
+@mcp.tool()
+def product_enrichment_get(partnumber: str) -> dict[str, Any]:
+    """Devuelve todos los enriquecimientos aprobados que el Product Workspace reutiliza."""
+    normalized = partnumber.strip().upper()
+    rows = enrichment_repository.get_approved(normalized)
+    return {
+        "found": bool(rows),
+        "partnumber": normalized,
+        "count": len(rows),
+        "enrichments": rows,
+    }
 
 
 def main() -> None:
