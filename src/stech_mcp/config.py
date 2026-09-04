@@ -1,21 +1,63 @@
 from __future__ import annotations
 
+import os
 from typing import Literal
 
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_prefix="", extra="ignore")
+    """Configuración del MCP compatible con el entorno real de scr/v8-identity.
 
-    stech_sql_driver: str = "ODBC Driver 18 for SQL Server"
-    stech_sql_server: str = "localhost"
-    stech_sql_database: str = "DB_ST"
-    stech_sql_auth: Literal["sql", "windows"] = "windows"
-    stech_sql_user: str | None = None
-    stech_sql_password: str | None = None
-    stech_sql_trust_certificate: bool = True
-    stech_sql_encrypt: bool = True
+    STECH_SQL_* tiene prioridad cuando se define. Si no existe, se reutilizan
+    directamente las variables DIST_SQL_* del monitor de distribuidores.
+    """
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_prefix="",
+        extra="ignore",
+        populate_by_name=True,
+    )
+
+    stech_sql_driver: str = Field(
+        "ODBC Driver 18 for SQL Server",
+        validation_alias=AliasChoices("STECH_SQL_DRIVER", "DIST_SQL_DRIVER"),
+    )
+    stech_sql_server: str = Field(
+        "localhost",
+        validation_alias=AliasChoices("STECH_SQL_SERVER", "DIST_SQL_SERVER"),
+    )
+    stech_sql_database: str = Field(
+        "DB_DISTRIBUIDORES",
+        validation_alias=AliasChoices("STECH_SQL_DATABASE", "DIST_SQL_DATABASE"),
+    )
+    stech_sql_auth: Literal["sql", "windows"] = Field(
+        "windows",
+        validation_alias="STECH_SQL_AUTH",
+    )
+    stech_sql_user: str | None = Field(
+        None,
+        validation_alias=AliasChoices("STECH_SQL_USER", "DIST_SQL_USER"),
+    )
+    stech_sql_password: str | None = Field(
+        None,
+        validation_alias=AliasChoices("STECH_SQL_PASSWORD", "DIST_SQL_PASSWORD"),
+    )
+    stech_sql_trust_certificate: bool = Field(
+        True,
+        validation_alias="STECH_SQL_TRUST_CERTIFICATE",
+    )
+    stech_sql_encrypt: bool = Field(
+        False,
+        validation_alias=AliasChoices("STECH_SQL_ENCRYPT", "DIST_SQL_ENCRYPT"),
+    )
+    dist_sql_trusted_connection: bool | None = Field(
+        None,
+        validation_alias="DIST_SQL_TRUSTED_CONNECTION",
+        exclude=True,
+    )
 
     mcp_sql_database: str = "STECH_MCP"
     mcp_sql_user: str | None = None
@@ -23,7 +65,14 @@ class Settings(BaseSettings):
     mcp_transport: Literal["stdio", "streamable-http"] = "stdio"
     mcp_host: str = "127.0.0.1"
     mcp_port: int = 8765
-    erp_product_view: str = "dbo.V_MCP_PRODUCTO"
+    erp_product_view: str = "dbo.V_PRD_PRODUCTO_ACTUAL"
+
+    @model_validator(mode="after")
+    def _derive_legacy_auth(self) -> "Settings":
+        # Si se definió explícitamente STECH_SQL_AUTH, siempre gana.
+        if os.getenv("STECH_SQL_AUTH") is None and self.dist_sql_trusted_connection is not None:
+            self.stech_sql_auth = "windows" if self.dist_sql_trusted_connection else "sql"
+        return self
 
 
 def _base_connection_parts(settings: Settings, database: str) -> list[str]:
@@ -42,7 +91,7 @@ def build_source_connection_string(settings: Settings) -> str:
         parts.append("Trusted_Connection=yes")
     else:
         if not settings.stech_sql_user or not settings.stech_sql_password:
-            raise ValueError("SQL authentication requires STECH_SQL_USER and STECH_SQL_PASSWORD")
+            raise ValueError("SQL authentication requires STECH_SQL_USER/DIST_SQL_USER and password")
         parts.extend([f"UID={settings.stech_sql_user}", f"PWD={settings.stech_sql_password}"])
     return ";".join(parts) + ";"
 
