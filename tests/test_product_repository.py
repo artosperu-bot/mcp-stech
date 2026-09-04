@@ -19,9 +19,13 @@ class FakeCursor:
 class FakeConnection:
     def __init__(self):
         self.cursor_obj = FakeCursor()
+        self.closed = False
 
     def cursor(self):
         return self.cursor_obj
+
+    def close(self):
+        self.closed = True
 
 
 def test_product_get_uses_parameter_not_sql_concatenation():
@@ -33,6 +37,7 @@ def test_product_get_uses_parameter_not_sql_concatenation():
     assert "DROP TABLE" not in conn.cursor_obj.sql
     assert conn.cursor_obj.params == ("82YU00XYLM'; DROP TABLE X;--",)
     assert result["marca"] == "LENOVO"
+    assert conn.closed is True
 
 
 def test_rejects_unsafe_view_name():
