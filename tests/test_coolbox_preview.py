@@ -1,4 +1,5 @@
 import json
+from decimal import Decimal
 
 from stech_mcp.services.coolbox_preview import build_coolbox_preview
 
@@ -70,12 +71,42 @@ def test_preview_never_invents_missing_config_sensitive_specs():
     assert fields["Procesador gráfico"]["value"] is None
 
 
-def test_preview_estimates_only_packaging_fields_when_missing():
+def test_preview_uses_approved_15_x_packaging_fallback():
     preview = build_coolbox_preview(_product())
     fields = {row["field"]: row for row in preview["fields"]}
 
-    assert fields["Peso (g)"]["status"] == "ESTIMATED"
-    assert fields["Peso (g)"]["value"] == 2350
-    assert fields["Alto (cm)"]["status"] == "ESTIMATED"
-    assert fields["Ancho (cm)"]["status"] == "ESTIMATED"
-    assert fields["Largo  (cm)"]["status"] == "ESTIMATED"
+    assert fields["Alto (cm)"]["value"] == 7
+    assert fields["Ancho (cm)"]["value"] == 33
+    assert fields["Largo  (cm)"]["value"] == 54
+    assert fields["Peso (g)"]["value"] == 2500
+    for field_name in ("Alto (cm)", "Ancho (cm)", "Largo  (cm)", "Peso (g)"):
+        assert fields[field_name]["status"] == "ESTIMATED"
+        assert fields[field_name]["method"] == "ESTIMATED"
+        assert fields[field_name]["source"] == "REGLA_STECH_EMPAQUE"
+        assert "LAPTOP_15_X_DEFAULT" in (fields[field_name]["note"] or "")
+
+
+def test_preview_prefers_resolved_official_package_over_fallback():
+    package = {
+        "width_cm": Decimal("31.0"),
+        "length_cm": Decimal("50.5"),
+        "height_cm": Decimal("7.2"),
+        "weight_g": 2180,
+        "status": "VERIFIED",
+        "method": "VERIFIED",
+        "source": "Lenovo PSREF exact PN",
+        "rule_code": None,
+        "confidence_grade": "A1",
+    }
+
+    preview = build_coolbox_preview(_product(), package=package)
+    fields = {row["field"]: row for row in preview["fields"]}
+
+    assert fields["Alto (cm)"]["value"] == Decimal("7.2")
+    assert fields["Ancho (cm)"]["value"] == Decimal("31.0")
+    assert fields["Largo  (cm)"]["value"] == Decimal("50.5")
+    assert fields["Peso (g)"]["value"] == 2180
+    for field_name in ("Alto (cm)", "Ancho (cm)", "Largo  (cm)", "Peso (g)"):
+        assert fields[field_name]["status"] == "VERIFIED"
+        assert fields[field_name]["method"] == "VERIFIED"
+        assert fields[field_name]["source"] == "Lenovo PSREF exact PN"
