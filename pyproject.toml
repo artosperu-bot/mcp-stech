@@ -21,6 +21,7 @@ dev = ["pytest>=8.4,<10"]
 
 [project.scripts]
 stech-mcp = "stech_mcp.server:main"
+stech-mcp-check = "stech_mcp.check:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
