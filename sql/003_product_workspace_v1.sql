@@ -133,14 +133,26 @@ BEGIN
 END;
 GO
 
-IF NOT EXISTS (
+-- A binary image may legitimately be shared by different SKUs. Deduplicate only
+-- within the same Part Number and variant class so cross-SKU reuse stays possible.
+IF EXISTS (
     SELECT 1 FROM sys.indexes
     WHERE object_id = OBJECT_ID(N'dbo.product_image')
       AND name = N'UX_product_image_sha256_notnull'
 )
 BEGIN
-    CREATE UNIQUE INDEX UX_product_image_sha256_notnull
-        ON dbo.product_image(sha256_hash)
+    DROP INDEX UX_product_image_sha256_notnull ON dbo.product_image;
+END;
+GO
+
+IF NOT EXISTS (
+    SELECT 1 FROM sys.indexes
+    WHERE object_id = OBJECT_ID(N'dbo.product_image')
+      AND name = N'UX_product_image_partnumber_hash_variant'
+)
+BEGIN
+    CREATE UNIQUE INDEX UX_product_image_partnumber_hash_variant
+        ON dbo.product_image(partnumber, sha256_hash, variant_type)
         WHERE sha256_hash IS NOT NULL;
 END;
 GO
