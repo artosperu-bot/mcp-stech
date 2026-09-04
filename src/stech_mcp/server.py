@@ -279,12 +279,13 @@ def product_master_get(partnumber: str) -> dict[str, Any]:
 
 @mcp.tool()
 def product_readiness_get(partnumber: str) -> dict[str, Any]:
-    """Devuelve readiness persistido y contadores del último draft Coolbox."""
+    """Devuelve readiness persistido, draft Coolbox e inventario real de imágenes."""
     normalized = partnumber.strip().upper()
     master = product_master_repository.get(normalized)
     if master is None:
         return {"found": False, "partnumber": normalized, "readiness": None}
     draft = product_master_repository.get_latest_draft(normalized, "COOLBOX")
+    image_inventory = product_images_get(normalized)
     return {
         "found": True,
         "partnumber": normalized,
@@ -295,8 +296,11 @@ def product_readiness_get(partnumber: str) -> dict[str, Any]:
             "image_score": master.get("image_score"),
             "package_score": master.get("package_score"),
             "coolbox_score": master.get("coolbox_score"),
-            "image_count": master.get("image_count"),
-            "approved_image_count": master.get("approved_image_count"),
+            "image_count": image_inventory.get("image_count", 0),
+            "source_image_count": image_inventory.get("source_image_count", 0),
+            "workspace_image_count": image_inventory.get("workspace_image_count", 0),
+            "usable_image_count": image_inventory.get("usable_image_count", 0),
+            "approved_image_count": image_inventory.get("approved_image_count", 0),
             "coolbox_field_count": (draft or {}).get("field_count") or master.get("coolbox_field_count"),
             "coolbox_required_missing_count": (draft or {}).get("required_missing_count") or master.get("coolbox_required_missing_count"),
             "coolbox_estimated_count": (draft or {}).get("estimated_count") or master.get("coolbox_estimated_count"),
@@ -386,7 +390,9 @@ def product_images_get(partnumber: str) -> dict[str, Any]:
             "partnumber": normalized,
             "source_image_count": 0,
             "workspace_image_count": 0,
+            "image_count": 0,
             "usable_image_count": 0,
+            "approved_image_count": 0,
             "images": [],
         }
 
@@ -404,6 +410,7 @@ def product_images_get(partnumber: str) -> dict[str, Any]:
         for image in images
         if bool(image.get("is_approved")) or bool(image.get("source_eligible"))
     )
+    approved = sum(1 for image in images if bool(image.get("is_approved")))
 
     return {
         "found": True,
@@ -412,7 +419,9 @@ def product_images_get(partnumber: str) -> dict[str, Any]:
         "source_table": "DB_DISTRIBUIDORES.dbo.PRD_DELTRON_IMAGEN",
         "source_image_count": len(source_images),
         "workspace_image_count": len(workspace_images),
+        "image_count": len(images),
         "usable_image_count": usable,
+        "approved_image_count": approved,
         "editing_required": False,
         "source_images": source_images,
         "workspace_images": workspace_images,
