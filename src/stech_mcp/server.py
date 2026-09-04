@@ -9,6 +9,7 @@ from stech_mcp.config import Settings
 from stech_mcp.db.connection import make_source_connection_factory, sql_ping
 from stech_mcp.db.product_repository import ProductRepository
 from stech_mcp.domain.packaging_rules import estimate_package_weight, validate_package_dimensions
+from stech_mcp.services.coolbox_preview import build_coolbox_preview
 from stech_mcp.tools.core import health_snapshot
 
 settings = Settings()
@@ -57,6 +58,21 @@ def product_history(partnumber: str, limit: int = 25) -> dict[str, Any]:
         "source_view": "dbo.V_HST_PRODUCTO_OBSERVACION_V8",
         "synthetic_intervals": False,
     }
+
+
+@mcp.tool()
+def coolbox_preview(partnumber: str) -> dict[str, Any]:
+    """Prepara las 81 columnas de la plantilla Coolbox de laptops sin inventar especificaciones sensibles."""
+    product = product_repository.get_by_partnumber(partnumber)
+    if product is None:
+        return {
+            "found": False,
+            "partnumber": partnumber.strip(),
+            "template": "Laptops-All in one",
+            "fields": [],
+        }
+    preview = build_coolbox_preview(product)
+    return {"found": True, **preview}
 
 
 @mcp.tool()
