@@ -16,6 +16,7 @@ from stech_mcp.domain.packaging_resolver import resolve_package
 from stech_mcp.domain.packaging_rules import estimate_package_weight, validate_package_dimensions
 from stech_mcp.services.coolbox_preview import _load_specs, _screen, build_coolbox_preview
 from stech_mcp.services.marketplace_preview import build_marketplace_preview
+from stech_mcp.services.product_approval import ProductApprovalService
 from stech_mcp.services.product_prepare import ProductPrepareService
 from stech_mcp.tools.core import health_snapshot
 
@@ -32,6 +33,7 @@ product_prepare_service = ProductPrepareService(
     packaging_rule_repository=packaging_rule_repository,
     product_master_repository=product_master_repository,
 )
+product_approval_service = ProductApprovalService(product_master_repository)
 
 mcp = MCPServer("STECH MCP")
 
@@ -284,9 +286,11 @@ def product_readiness_get(partnumber: str) -> dict[str, Any]:
             "package_score": master.get("package_score"),
             "coolbox_score": master.get("coolbox_score"),
             "image_count": master.get("image_count"),
+            "approved_image_count": master.get("approved_image_count"),
             "coolbox_field_count": (draft or {}).get("field_count") or master.get("coolbox_field_count"),
             "coolbox_required_missing_count": (draft or {}).get("required_missing_count") or master.get("coolbox_required_missing_count"),
             "coolbox_estimated_count": (draft or {}).get("estimated_count") or master.get("coolbox_estimated_count"),
+            "coolbox_approval_status": (draft or {}).get("approval_status") or master.get("coolbox_approval_status"),
         },
     }
 
@@ -302,6 +306,22 @@ def channel_draft_get(partnumber: str, marketplace: str = "COOLBOX") -> dict[str
     payload = draft.get("payload") if isinstance(draft.get("payload"), dict) else {}
     out = {**draft, "fields": list(payload.get("fields") or [])}
     return {"found": True, "partnumber": normalized, "marketplace": market, "draft": out}
+
+
+@mcp.tool()
+def product_approve(
+    partnumber: str,
+    marketplace: str = "COOLBOX",
+    approved_by: str = "CHATGPT",
+    note: str | None = None,
+) -> dict[str, Any]:
+    """Aprueba la versión exacta del último draft solo si ficha, imágenes y datos comerciales están listos."""
+    return product_approval_service.approve(
+        partnumber,
+        marketplace=marketplace,
+        approved_by=approved_by,
+        note=note,
+    )
 
 
 def main() -> None:
