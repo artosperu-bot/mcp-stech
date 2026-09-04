@@ -45,7 +45,12 @@ class ProductPrepareService:
             except LookupError:
                 package = None
 
-        preview = build_coolbox_preview(product, package=package)
+        approved_enrichments = self.enrichment_repository.get_approved(normalized)
+        preview = build_coolbox_preview(
+            product,
+            package=package,
+            enrichments=approved_enrichments,
+        )
         images = self.product_master_repository.list_images(normalized)
         readiness = calculate_readiness(
             product=product,
@@ -103,6 +108,7 @@ class ProductPrepareService:
                 "draft_version": draft.get("draft_version"),
                 "field_count": draft.get("field_count"),
                 "readiness_state": readiness.get("state"),
+                "approved_enrichment_count": len(approved_enrichments),
             },
         )
 
@@ -113,6 +119,7 @@ class ProductPrepareService:
             "package": package,
             "readiness": readiness,
             "images": images,
+            "approved_enrichments": approved_enrichments,
             "coolbox_draft": draft,
             "coolbox_preview": preview,
         }
