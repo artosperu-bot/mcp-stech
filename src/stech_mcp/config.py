@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from typing import Literal
 
 from pydantic import AliasChoices, Field, model_validator
@@ -69,8 +68,10 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _derive_legacy_auth(self) -> "Settings":
-        # Si se definió explícitamente STECH_SQL_AUTH, siempre gana.
-        if os.getenv("STECH_SQL_AUTH") is None and self.dist_sql_trusted_connection is not None:
+        # Si stech_sql_auth fue provisto explícitamente (constructor, entorno o .env),
+        # siempre gana. Solo derivamos la autenticación desde DIST_SQL_TRUSTED_CONNECTION
+        # cuando stech_sql_auth conserva su valor por defecto.
+        if "stech_sql_auth" not in self.model_fields_set and self.dist_sql_trusted_connection is not None:
             self.stech_sql_auth = "windows" if self.dist_sql_trusted_connection else "sql"
         return self
 
