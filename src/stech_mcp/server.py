@@ -4,6 +4,7 @@ from decimal import Decimal
 from typing import Any
 
 from mcp.server import MCPServer
+from mcp.server.transport_security import TransportSecuritySettings
 
 from stech_mcp.config import Settings
 from stech_mcp.db.connection import make_source_connection_factory, sql_ping
@@ -17,6 +18,27 @@ source_connection_factory = make_source_connection_factory(settings)
 product_repository = ProductRepository(source_connection_factory, view_name=settings.erp_product_view)
 
 mcp = MCPServer("STECH MCP")
+
+
+def build_transport_security(current_settings: Settings) -> TransportSecuritySettings:
+    public_host = current_settings.mcp_public_host.strip()
+    allowed_hosts = [
+        "127.0.0.1",
+        "127.0.0.1:*",
+        "localhost",
+        "localhost:*",
+        "[::1]",
+        "[::1]:*",
+    ]
+    allowed_origins: list[str] = []
+    if public_host:
+        allowed_hosts.extend([public_host, f"{public_host}:*"])
+        allowed_origins.append(f"https://{public_host}")
+
+    return TransportSecuritySettings(
+        allowed_hosts=allowed_hosts,
+        allowed_origins=allowed_origins,
+    )
 
 
 @mcp.tool()
@@ -122,7 +144,12 @@ def main() -> None:
 
     import uvicorn
 
-    app = mcp.streamable_http_app(stateless_http=True, json_response=True)
+    security = build_transport_security(settings)
+    app = mcp.streamable_http_app(
+        stateless_http=True,
+        json_response=True,
+        transport_security=security,
+    )
     uvicorn.run(app, host=settings.mcp_host, port=settings.mcp_port)
 
 
