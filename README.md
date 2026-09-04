@@ -86,7 +86,15 @@ Ejecutar en SSMS, sobre la base operativa:
 sql/900_discover_erp_schema.sql
 ```
 
-Ese script es solo lectura y devuelve columnas de las tablas principales. Con ese resultado se construye `dbo.V_MCP_PRODUCTO` usando los nombres y relaciones reales del ERP, sin asumir estructura.
+Ese script es solo lectura y devuelve columnas de las tablas principales.
+
+Si `HST_PRODUCTO_OBSERVACION` contiene las columnas esperadas, ejecutar después:
+
+```text
+sql/010_create_v_mcp_producto_from_hst.sql
+```
+
+Ese segundo script valida primero la estructura y solo entonces crea/actualiza `dbo.V_MCP_PRODUCTO` con el último registro por `producto_distribuidor_id`. No modifica filas de negocio.
 
 La vista configurada en `ERP_PRODUCT_VIEW` debe contener al menos:
 
