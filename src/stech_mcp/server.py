@@ -11,6 +11,7 @@ from stech_mcp.db.connection import make_mcp_connection_factory, make_source_con
 from stech_mcp.db.deltron_image_repository import DeltronImageRepository
 from stech_mcp.db.enrichment_repository import EnrichmentRepository
 from stech_mcp.db.packaging_rule_repository import PackagingRuleRepository
+from stech_mcp.db.product_identity_repository import ProductIdentityRepository
 from stech_mcp.db.product_master_repository import ProductMasterRepository
 from stech_mcp.db.product_repository import ProductRepository
 from stech_mcp.domain.packaging_resolver import resolve_package
@@ -19,6 +20,7 @@ from stech_mcp.services.coolbox_preview import _load_specs, _screen, build_coolb
 from stech_mcp.services.marketplace_preview import build_marketplace_preview
 from stech_mcp.services.product_approval import ProductApprovalService
 from stech_mcp.services.product_field_verification import ProductFieldVerificationService
+from stech_mcp.services.product_identity_promotion import ProductIdentityPromotionService
 from stech_mcp.services.product_images import normalize_deltron_images
 from stech_mcp.services.product_prepare import ProductPrepareService
 from stech_mcp.tools.core import health_snapshot
@@ -27,6 +29,7 @@ settings = Settings()
 source_connection_factory = make_source_connection_factory(settings)
 mcp_connection_factory = make_mcp_connection_factory(settings)
 product_repository = ProductRepository(source_connection_factory, view_name=settings.erp_product_view)
+product_identity_repository = ProductIdentityRepository(source_connection_factory)
 deltron_image_repository = DeltronImageRepository(source_connection_factory)
 enrichment_repository = EnrichmentRepository(mcp_connection_factory)
 packaging_rule_repository = PackagingRuleRepository(mcp_connection_factory)
@@ -40,6 +43,11 @@ product_prepare_service = ProductPrepareService(
 )
 product_approval_service = ProductApprovalService(product_master_repository)
 product_field_verification_service = ProductFieldVerificationService(enrichment_repository)
+product_identity_promotion_service = ProductIdentityPromotionService(
+    enrichment_repository=enrichment_repository,
+    identity_repository=product_identity_repository,
+    audit_repository=product_master_repository,
+)
 
 mcp = MCPServer("STECH MCP")
 
@@ -377,6 +385,39 @@ def product_enrichment_get(partnumber: str) -> dict[str, Any]:
         "count": len(rows),
         "enrichments": rows,
     }
+
+
+@mcp.tool()
+def product_identity_missing_list(
+    after_id: int = 0,
+    limit: int = 100,
+    distributor: str | None = None,
+) -> dict[str, Any]:
+    """Lista productos activos con Part Number y EAN/UPC faltante, con paginación estable."""
+    result = product_identity_repository.list_missing_identifiers(
+        after_id=after_id,
+        limit=limit,
+        distributor=distributor,
+    )
+    return {
+        "after_id": max(0, int(after_id or 0)),
+        "distributor": str(distributor).strip().upper() if distributor else None,
+        **result,
+    }
+
+
+@mcp.tool()
+def product_identity_promote_verified(
+    partnumber: str,
+    identifier_type: str,
+    approved_by: str = "CHATGPT",
+) -> dict[str, Any]:
+    """Promueve un EAN/UPC/GTIN VERIFIED al catálogo operativo sin sobrescribir conflictos."""
+    return product_identity_promotion_service.promote(
+        partnumber,
+        identifier_type,
+        approved_by=approved_by,
+    )
 
 
 @mcp.tool()
