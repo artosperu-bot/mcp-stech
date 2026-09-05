@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stech-mcp"
+version = "0.1.0"
+description = "MCP seguro de S-TECH conectado a SQL Server para enriquecimiento y exportación Coolbox"
+requires-python = ">=3.12"
+dependencies = [
+  "mcp>=2,<3",
+  "pyodbc>=5.2,<6",
+  "pydantic>=2.11,<3",
+  "pydantic-settings>=2.10,<3",
+  "openpyxl>=3.1,<4",
+  "uvicorn>=0.35,<1"
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.4,<10"]
+
+[project.scripts]
+stech-mcp = "stech_mcp.server:main"
+stech-mcp-check = "stech_mcp.check:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-q"
