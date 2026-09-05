@@ -19,4 +19,6 @@ def test_server_module_imports_and_exposes_initial_tools():
     assert callable(server.product_approve)
     assert callable(server.product_field_verify)
     assert callable(server.product_enrichment_get)
+    assert callable(server.product_identity_missing_list)
+    assert callable(server.product_identity_promote_verified)
     assert callable(server.product_images_get)
