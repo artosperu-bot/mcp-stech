@@ -1,1 +1,0 @@
-VTEX Image Sync V1 is being implemented on this branch with TDD. The RED phase intentionally includes tests that require the not-yet-implemented local image sync and VTEX image configuration contracts.
