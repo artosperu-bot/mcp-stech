@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import Any
 from urllib.parse import urlparse
 
+from stech_mcp.domain.gtin import barcode_type, normalize_gtin, validate_gtin
+
 
 _ALLOWED_SOURCE_TYPES = {
     "MANUFACTURER",
@@ -44,6 +46,8 @@ _STRONG_EXACT_SOURCE_TYPES = {
     "OFFICIAL_DOCUMENT",
     "AUTHORIZED_DISTRIBUTOR",
 }
+
+_IDENTIFIER_FIELDS = {"gtin", "ean", "upc"}
 
 
 class ProductFieldVerificationService:
@@ -99,6 +103,20 @@ class ProductFieldVerificationService:
                 raise ValueError("variant-sensitive fields require manufacturer, official document or authorized distributor evidence")
             if source_pn != pn:
                 raise ValueError("variant-sensitive fields require exact source_partnumber")
+
+        if code in _IDENTIFIER_FIELDS:
+            if value_text is None:
+                raise ValueError("EAN/UPC/GTIN must use value_text to preserve leading zeroes")
+            normalized_identifier = normalize_gtin(value_text)
+            if normalized_identifier is None or not validate_gtin(normalized_identifier):
+                raise ValueError("EAN/UPC/GTIN must have a valid GS1 check digit")
+            kind = barcode_type(normalized_identifier)
+            if code == "ean" and kind not in {"EAN_8", "EAN_13"}:
+                raise ValueError("EAN field requires EAN-8 or EAN-13")
+            if code == "upc" and kind != "UPC_A":
+                raise ValueError("UPC field requires UPC-A")
+            value_text = normalized_identifier
+            value_number = None
 
         parsed = urlparse(url)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
