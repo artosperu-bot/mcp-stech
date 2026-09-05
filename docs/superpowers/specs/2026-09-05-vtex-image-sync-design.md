@@ -53,7 +53,7 @@ Cada URL temporal incluirá un token HMAC-SHA256 con:
 - `partnumber`
 - expiración Unix
 
-El secreto viene de `VTEX_IMAGE_SIGNING_SECRET`.
+`VTEX_IMAGE_SIGNING_SECRET` es opcional. Si no se define, STECH MCP genera automáticamente un secreto criptográficamente seguro al arrancar y lo conserva durante la vida del proceso. Un reinicio invalida URLs temporales anteriores, lo cual es aceptable porque su TTL es corto. Si el operador define un secreto explícito, ese valor tiene prioridad.
 
 Reglas:
 
@@ -69,14 +69,13 @@ Reglas:
 Nueva operación `product_images_sync_local(partnumber)`:
 
 1. Normaliza Part Number a mayúsculas.
-2. Busca primero imágenes ya registradas en `dbo.product_image`.
-3. Si faltan o la metadata está desactualizada, escanea `STECH_IMAGE_ROOT` recursivamente por carpeta/archivos cuyo Part Number sea exacto.
-4. Solo acepta nombres `{PN}_NN.ext`.
-5. `NN=01` => `position=1` y principal.
-6. Orden posterior por `NN` ascendente.
-7. Calcula SHA-256, tamaño de archivo, dimensiones y formato real.
-8. Persiste/upserta en `dbo.product_image` con `source_type='LOCAL_PC020'`, `storage_path`, `sha256_hash`, dimensiones, formato, `position` e `is_approved=1` si el archivo pasa validación.
-9. No duplica por `(partnumber, sha256_hash, variant_type)`.
+2. Escanea `STECH_IMAGE_ROOT` recursivamente por archivos cuyo Part Number sea exacto.
+3. Solo acepta nombres `{PN}_NN.ext`.
+4. `NN=01` => `position=1` y principal.
+5. Orden posterior por `NN` ascendente.
+6. Calcula SHA-256, tamaño de archivo, dimensiones y formato real.
+7. Persiste/upserta en `dbo.product_image` con `source_type='LOCAL_PC020'`, `storage_path`, `sha256_hash`, dimensiones, formato, `position` e `is_approved=1` si el archivo pasa validación.
+8. No duplica por `(partnumber, sha256_hash, variant_type)`.
 
 Si existen `_02`, `_03`, etc. pero falta `_01`, el estado será `REVIEW` y no se subirá nada automáticamente.
 
@@ -120,7 +119,7 @@ No activa/desactiva productos en V1. La activación se tratará después.
 
 ## Publication traceability
 
-Se agregará una tabla aditiva `dbo.product_image_publication` en `STECH_MCP`:
+Se agrega una tabla aditiva `dbo.product_image_publication` en `STECH_MCP`:
 
 - `product_image_publication_id`
 - `product_image_id`
@@ -171,14 +170,22 @@ VTEX_APP_KEY=
 VTEX_APP_TOKEN=
 
 VTEX_IMAGE_PUBLIC_BASE=https://mcp.artos.pe/vtex-images
+# Opcional; si se omite, STECH MCP genera uno seguro al arrancar.
 VTEX_IMAGE_SIGNING_SECRET=
 VTEX_IMAGE_URL_TTL_SECONDS=900
 VTEX_HTTP_TIMEOUT_SECONDS=30
 ```
 
+Las credenciales también aceptan los aliases ya usados por V8:
+
+```env
+CHN_CRED_VTEX_STECH_APP_KEY=
+CHN_CRED_VTEX_STECH_APP_TOKEN=
+```
+
 `VTEX_IMAGE_PUBLIC_BASE` NO implica hosting adicional: apunta al mismo MCP expuesto por Cloudflare Tunnel.
 
-`VTEX_IMAGE_SIGNING_SECRET` debe ser un secreto aleatorio largo y no se sube a GitHub.
+No se debe subir `.env`, AppKey, AppToken ni un secreto explícito a GitHub.
 
 ## Frozen boundaries
 
