@@ -12,6 +12,7 @@ from stech_mcp.db.deltron_image_repository import DeltronImageRepository
 from stech_mcp.db.enrichment_repository import EnrichmentRepository
 from stech_mcp.db.packaging_rule_repository import PackagingRuleRepository
 from stech_mcp.db.product_identity_repository import ProductIdentityRepository
+from stech_mcp.db.product_identity_research_repository import ProductIdentityResearchRepository
 from stech_mcp.db.product_master_repository import ProductMasterRepository
 from stech_mcp.db.product_repository import ProductRepository
 from stech_mcp.domain.packaging_resolver import resolve_package
@@ -21,6 +22,7 @@ from stech_mcp.services.marketplace_preview import build_marketplace_preview
 from stech_mcp.services.product_approval import ProductApprovalService
 from stech_mcp.services.product_field_verification import ProductFieldVerificationService
 from stech_mcp.services.product_identity_promotion import ProductIdentityPromotionService
+from stech_mcp.services.product_identity_research import ProductIdentityResearchService
 from stech_mcp.services.product_images import normalize_deltron_images
 from stech_mcp.services.product_prepare import ProductPrepareService
 from stech_mcp.tools.core import health_snapshot
@@ -30,6 +32,7 @@ source_connection_factory = make_source_connection_factory(settings)
 mcp_connection_factory = make_mcp_connection_factory(settings)
 product_repository = ProductRepository(source_connection_factory, view_name=settings.erp_product_view)
 product_identity_repository = ProductIdentityRepository(source_connection_factory)
+product_identity_research_repository = ProductIdentityResearchRepository(mcp_connection_factory)
 deltron_image_repository = DeltronImageRepository(source_connection_factory)
 enrichment_repository = EnrichmentRepository(mcp_connection_factory)
 packaging_rule_repository = PackagingRuleRepository(mcp_connection_factory)
@@ -47,6 +50,12 @@ product_identity_promotion_service = ProductIdentityPromotionService(
     enrichment_repository=enrichment_repository,
     identity_repository=product_identity_repository,
     audit_repository=product_master_repository,
+)
+product_identity_research_service = ProductIdentityResearchService(
+    identity_repository=product_identity_repository,
+    research_repository=product_identity_research_repository,
+    verification_service=product_field_verification_service,
+    promotion_service=product_identity_promotion_service,
 )
 
 mcp = MCPServer("STECH MCP")
@@ -359,19 +368,29 @@ def product_field_verify(
     value_number: float | None = None,
     unit: str | None = None,
 ) -> dict[str, Any]:
-    """Guarda un dato técnico como VERIFIED solo junto con evidencia trazable y reglas de coincidencia de variante."""
-    return product_field_verification_service.verify(
-        partnumber=partnumber,
-        field_code=field_code,
-        value_text=value_text,
-        value_number=value_number,
-        unit=unit,
-        confidence_grade=confidence_grade,
-        source_url=source_url,
-        source_type=source_type,
-        source_partnumber=source_partnumber,
-        evidence_text=evidence_text,
-    )
+    """Guarda un dato técnico como VERIFIED; aliases comunes se normalizan y errores de validación no rompen el lote."""
+    try:
+        return product_field_verification_service.verify(
+            partnumber=partnumber,
+            field_code=field_code,
+            value_text=value_text,
+            value_number=value_number,
+            unit=unit,
+            confidence_grade=confidence_grade,
+            source_url=source_url,
+            source_type=source_type,
+            source_partnumber=source_partnumber,
+            evidence_text=evidence_text,
+        )
+    except ValueError as exc:
+        return {
+            "verified": False,
+            "status": "VALIDATION_ERROR",
+            "partnumber": str(partnumber or "").strip().upper(),
+            "field_code": str(field_code or "").strip().lower(),
+            "error": str(exc),
+            "retryable": True,
+        }
 
 
 @mcp.tool()
@@ -418,6 +437,73 @@ def product_identity_promote_verified(
         identifier_type,
         approved_by=approved_by,
     )
+
+
+@mcp.tool()
+def product_identity_research_queue(
+    after_id: int = 0,
+    limit: int = 100,
+    distributor: str | None = None,
+    include_deferred: bool = False,
+) -> dict[str, Any]:
+    """Devuelve la cola masiva reanudable y omite casos terminales o identidades inválidas ya conocidas."""
+    try:
+        return product_identity_research_service.queue(
+            after_id=after_id,
+            limit=limit,
+            distributor=distributor,
+            include_deferred=include_deferred,
+        )
+    except ValueError as exc:
+        return {"status": "VALIDATION_ERROR", "error": str(exc), "products": [], "count": 0}
+
+
+@mcp.tool()
+def product_identity_research_record(
+    producto_distribuidor_id: int,
+    partnumber: str,
+    identifier_type: str,
+    status: str,
+    note: str | None = None,
+    value_text: str | None = None,
+    confidence_grade: str | None = None,
+    source_url: str | None = None,
+    source_type: str | None = None,
+    source_partnumber: str | None = None,
+    evidence_text: str | None = None,
+    approved_by: str = "CHATGPT",
+) -> dict[str, Any]:
+    """Registra un resultado de research; VERIFIED verifica y promueve en una sola llamada."""
+    try:
+        return product_identity_research_service.record(
+            producto_distribuidor_id=producto_distribuidor_id,
+            partnumber=partnumber,
+            identifier_type=identifier_type,
+            status=status,
+            note=note,
+            value_text=value_text,
+            confidence_grade=confidence_grade,
+            source_url=source_url,
+            source_type=source_type,
+            source_partnumber=source_partnumber,
+            evidence_text=evidence_text,
+            approved_by=approved_by,
+        )
+    except ValueError as exc:
+        return {
+            "recorded": False,
+            "status": "VALIDATION_ERROR",
+            "partnumber": str(partnumber or "").strip().upper(),
+            "identifier_type": str(identifier_type or "").strip().upper(),
+            "error": str(exc),
+            "retryable": True,
+        }
+
+
+@mcp.tool()
+def product_identity_research_status(partnumber: str | None = None) -> dict[str, Any]:
+    """Resume estados persistidos del research masivo, globalmente o por Part Number."""
+    return product_identity_research_service.status(partnumber=partnumber)
 
 
 @mcp.tool()
