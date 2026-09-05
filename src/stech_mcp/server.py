@@ -21,6 +21,7 @@ from stech_mcp.services.coolbox_preview import _load_specs, _screen, build_coolb
 from stech_mcp.services.marketplace_preview import build_marketplace_preview
 from stech_mcp.services.product_approval import ProductApprovalService
 from stech_mcp.services.product_field_verification import ProductFieldVerificationService
+from stech_mcp.services.product_identity_derivation import ProductIdentityDerivationService
 from stech_mcp.services.product_identity_promotion import ProductIdentityPromotionService
 from stech_mcp.services.product_identity_research import ProductIdentityResearchService
 from stech_mcp.services.product_images import normalize_deltron_images
@@ -48,6 +49,10 @@ product_approval_service = ProductApprovalService(product_master_repository)
 product_field_verification_service = ProductFieldVerificationService(enrichment_repository)
 product_identity_promotion_service = ProductIdentityPromotionService(
     enrichment_repository=enrichment_repository,
+    identity_repository=product_identity_repository,
+    audit_repository=product_master_repository,
+)
+product_identity_derivation_service = ProductIdentityDerivationService(
     identity_repository=product_identity_repository,
     audit_repository=product_master_repository,
 )
@@ -437,6 +442,51 @@ def product_identity_promote_verified(
         identifier_type,
         approved_by=approved_by,
     )
+
+
+@mcp.tool()
+def product_identity_derive_equivalent(
+    partnumber: str,
+    actor: str = "STECH_MCP",
+) -> dict[str, Any]:
+    """Deriva UPC-A↔EAN/GTIN-13 equivalente desde un identificador operativo válido, sin Internet."""
+    try:
+        return product_identity_derivation_service.derive_for_partnumber(partnumber, actor=actor)
+    except ValueError as exc:
+        return {
+            "found": False,
+            "partnumber": str(partnumber or "").strip().upper(),
+            "status": "VALIDATION_ERROR",
+            "error": str(exc),
+        }
+
+
+@mcp.tool()
+def product_identity_derive_equivalents(
+    after_id: int = 0,
+    limit: int = 500,
+    distributor: str | None = None,
+    actor: str = "STECH_MCP",
+) -> dict[str, Any]:
+    """Procesa masivamente equivalencias UPC/EAN determinísticas antes del research web."""
+    try:
+        return product_identity_derivation_service.derive_batch(
+            after_id=after_id,
+            limit=limit,
+            distributor=distributor,
+            actor=actor,
+        )
+    except ValueError as exc:
+        return {
+            "after_id": max(0, int(after_id or 0)),
+            "scanned_count": 0,
+            "processed_partnumber_count": 0,
+            "by_status": {"VALIDATION_ERROR": 1},
+            "results": [],
+            "has_more": False,
+            "status": "VALIDATION_ERROR",
+            "error": str(exc),
+        }
 
 
 @mcp.tool()
