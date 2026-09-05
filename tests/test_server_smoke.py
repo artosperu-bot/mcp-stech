@@ -23,5 +23,6 @@ def test_server_module_imports_and_exposes_initial_tools():
     assert callable(server.product_identity_promote_verified)
     assert callable(server.product_identity_research_queue)
     assert callable(server.product_identity_research_record)
+    assert callable(server.product_identity_research_record_batch)
     assert callable(server.product_identity_research_status)
     assert callable(server.product_images_get)
