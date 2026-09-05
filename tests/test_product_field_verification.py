@@ -142,3 +142,43 @@ def test_upc_requires_value_text_to_keep_leading_zeroes():
             source_partnumber="PN-UPC",
             evidence_text="UPC 036000291452",
         )
+
+
+def test_source_type_alias_is_normalized_before_variant_policy():
+    repo = FakeEnrichmentRepository()
+    service = ProductFieldVerificationService(repo)
+
+    result = service.verify(
+        partnumber="EP-T2510NBEGWW",
+        field_code="ean",
+        value_text="8806094899528",
+        confidence_grade="B",
+        source_url="https://shamericas.example/product",
+        source_type="distributor",
+        source_partnumber="EP-T2510NBEGWW",
+        evidence_text="Exact part number and EAN from an authorized distributor",
+    )
+
+    assert result["verified"] is True
+    assert result["source_type"] == "AUTHORIZED_DISTRIBUTOR"
+    assert result["source_type_normalized_from"] == "DISTRIBUTOR"
+    assert repo.evidence[0]["source_type"] == "AUTHORIZED_DISTRIBUTOR"
+
+
+def test_common_official_website_alias_maps_to_manufacturer():
+    repo = FakeEnrichmentRepository()
+    service = ProductFieldVerificationService(repo)
+
+    result = service.verify(
+        partnumber="PN-OFFICIAL",
+        field_code="ean",
+        value_text="4006381333931",
+        confidence_grade="A1",
+        source_url="https://manufacturer.example/product",
+        source_type="official_website",
+        source_partnumber="PN-OFFICIAL",
+        evidence_text="Official product page with exact part number and EAN",
+    )
+
+    assert result["source_type"] == "MANUFACTURER"
+    assert repo.evidence[0]["source_type"] == "MANUFACTURER"
