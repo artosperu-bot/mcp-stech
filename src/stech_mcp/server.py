@@ -501,6 +501,26 @@ def product_identity_research_record(
 
 
 @mcp.tool()
+def product_identity_research_record_batch(
+    items: list[dict[str, Any]],
+    approved_by: str = "CHATGPT",
+) -> dict[str, Any]:
+    """Registra hasta 100 resultados de research en una llamada y continúa aunque un elemento sea inválido."""
+    try:
+        return product_identity_research_service.record_batch(items, approved_by=approved_by)
+    except ValueError as exc:
+        return {
+            "count": 0,
+            "recorded_count": 0,
+            "error_count": 1,
+            "by_status": {"VALIDATION_ERROR": 1},
+            "results": [],
+            "status": "VALIDATION_ERROR",
+            "error": str(exc),
+        }
+
+
+@mcp.tool()
 def product_identity_research_status(partnumber: str | None = None) -> dict[str, Any]:
     """Resume estados persistidos del research masivo, globalmente o por Part Number."""
     return product_identity_research_service.status(partnumber=partnumber)
