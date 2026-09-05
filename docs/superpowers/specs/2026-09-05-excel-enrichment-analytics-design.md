@@ -5,7 +5,7 @@
 **Canonical document repository:** `artosperu-bot/mcp-stech`  
 **Implementation branches:** `mcp-stech/feat/excel-enrichment-analytics-v1` and `scr/feat/excel-enrichment-analytics-v1`  
 **MCP base:** `feat/product-workspace-v1` at `7a67b311f6eb6755eb74865d22d90a12ce3ebb79`  
-**SCR base:** `v8-identity` at `d6b766e35c7f11b78ae43469010bb9b92b07fcdf`  
+**SCR base:** `v8-identity` at `ce00c762cc74720af9ddf424c92305d9faa79cfc`  
 **First category:** laptops  
 **First acceptance Part Number:** `82YU00XYLM`
 
