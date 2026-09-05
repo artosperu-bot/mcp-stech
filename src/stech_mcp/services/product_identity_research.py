@@ -152,6 +152,7 @@ class ProductIdentityResearchService:
 
                 pending: list[str] = []
                 research_status: dict[str, str] = {}
+                research_attempt_count: dict[str, int] = {}
                 for identifier_type in missing:
                     state = state_map.get((product_id, identifier_type)) or {}
                     if not state:
@@ -167,6 +168,7 @@ class ProductIdentityResearchService:
                         state_map[(product_id, identifier_type)] = state
                     status = str(state.get("status") or "PENDING").upper()
                     research_status[identifier_type] = status
+                    research_attempt_count[identifier_type] = int(state.get("attempt_count") or 0)
                     if status in _TERMINAL_STATUSES:
                         continue
                     if status in _DEFERRED_STATUSES and not include_deferred:
@@ -183,6 +185,7 @@ class ProductIdentityResearchService:
                         "part_number": pn,
                         "pending_identifiers": pending,
                         "research_status": research_status,
+                        "research_attempt_count": research_attempt_count,
                         "researchable": True,
                         "identity_guard": "OK",
                         "partnumber_active_row_count": active_row_count,
