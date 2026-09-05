@@ -1,1 +1,0 @@
-Temporary RED marker for VTEX Image Sync V1 TDD. Remove before merge.
