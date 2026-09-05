@@ -1,14 +1,10 @@
 from __future__ import annotations
 
-import base64
 from pathlib import Path
 
+from PIL import Image
+
 from stech_mcp.services.local_image_sync import LocalImageSyncService
-
-
-PNG_1X1 = base64.b64decode(
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII="
-)
 
 
 class FakeImageRepository:
@@ -37,14 +33,16 @@ class FakeImageRepository:
         return [dict(row) for row in self.rows if row["partnumber"] == wanted]
 
 
+def _write_png(path: Path, marker: int) -> None:
+    image = Image.new("RGB", (1, 1), color=(marker % 255, (marker * 17) % 255, (marker * 31) % 255))
+    image.save(path, format="PNG")
+
+
 def _write_product_images(root: Path, partnumber: str, positions: list[int]) -> Path:
     folder = root / "LENOVO" / "COMPUTADORAS_NOTEBOOK" / partnumber
     folder.mkdir(parents=True)
     for position in positions:
-        # PNG decoders ignore trailing bytes; this keeps the image valid while
-        # giving each fixture a distinct SHA-256 like real product photos.
-        payload = PNG_1X1 + f"position={position}".encode("ascii")
-        (folder / f"{partnumber}_{position:02d}.png").write_bytes(payload)
+        _write_png(folder / f"{partnumber}_{position:02d}.png", position)
     return folder
 
 
@@ -101,7 +99,7 @@ def test_sync_ignores_partial_partnumber_matches(tmp_path):
     _write_product_images(tmp_path, partnumber, [1])
     wrong_folder = tmp_path / "LENOVO" / "COMPUTADORAS_NOTEBOOK" / f"{partnumber}X"
     wrong_folder.mkdir(parents=True)
-    (wrong_folder / f"{partnumber}X_01.png").write_bytes(PNG_1X1)
+    _write_png(wrong_folder / f"{partnumber}X_01.png", 99)
     repo = FakeImageRepository()
     service = LocalImageSyncService(root=tmp_path, repository=repo)
 
