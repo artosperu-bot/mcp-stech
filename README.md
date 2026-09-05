@@ -67,6 +67,13 @@ Product Workspace V1 agrega:
 - `product_readiness_get(partnumber)`
 - `channel_draft_get(partnumber, marketplace="COOLBOX")`
 
+VTEX Image Sync V1 agrega:
+
+- `product_images_sync_local(partnumber)`
+- `product_images_validate(partnumber)`
+- `vtex_images_status(partnumber, account_code="VTEX_STECH")`
+- `vtex_images_sync(partnumber, account_code="VTEX_STECH")`
+
 `product_prepare` es el punto único de preparación usado tanto por ChatGPT como por SCR. En V1 persiste el Product Master, resuelve el empaque, calcula readiness, genera un draft Coolbox versionado de 81 campos y registra auditoría. **No publica en ningún marketplace.**
 
 `marketplace_preview` soporta actualmente `COOLBOX/LAPTOP`. **Falabella/Saga y VTEX no tienen mappings inventados**: se incorporan después de revisar sus plantillas/esquemas reales y validaciones por categoría.
@@ -114,12 +121,13 @@ Ejecutar en orden:
 sql/001_create_stech_mcp.sql
 sql/002_multichannel_enrichment_phase1.sql
 sql/003_product_workspace_v1.sql
+sql/004_vtex_image_publication.sql
 ```
 
-Si `001` y `002` ya están aplicadas, para esta fase basta:
+Si `001`, `002` y `003` ya están aplicadas, para VTEX Image Sync basta:
 
 ```powershell
-sqlcmd -S PC020 -E -C -i ".\sql\003_product_workspace_v1.sql"
+sqlcmd -S PC020 -E -C -i ".\sql\004_vtex_image_publication.sql"
 ```
 
 `003_product_workspace_v1.sql` es aditiva e idempotente. Crea:
@@ -130,6 +138,8 @@ sqlcmd -S PC020 -E -C -i ".\sql\003_product_workspace_v1.sql"
 - `dbo.product_image`
 - `dbo.product_audit_event`
 - `dbo.V_PRODUCT_WORKSPACE_V1`
+
+`004_vtex_image_publication.sql` es aditiva e idempotente y agrega solamente `dbo.product_image_publication` para registrar qué imagen local fue publicada/verificada en qué SKU VTEX.
 
 No elimina tablas operativas ni publica productos.
 
@@ -143,7 +153,7 @@ Los cuatro valores deben ser distintos de `NULL`.
 
 ## Aceptación real de Product Workspace V1
 
-Después de aplicar `003` y reiniciar `stech-mcp`, el servidor debe exponer 14 herramientas: las 10 anteriores más las 4 herramientas de Product Workspace.
+Después de aplicar `003` y reiniciar `stech-mcp`, el servidor debe exponer las herramientas de Product Workspace.
 
 Preparar el producto real desde un cliente MCP o desde SCR debe ejecutar:
 
@@ -171,6 +181,73 @@ sqlcmd -S PC020 -E -C -Q "SELECT partnumber, brand, model, readiness_state, pack
 ```
 
 La vista SCR lee este estado directamente desde SQL Server para que la previsualización sea rápida. El botón **Preparar / Actualizar** llama al mismo `product_prepare` del MCP y luego vuelve a leer el estado persistido; no existe una segunda lógica de preparación dentro de SCR.
+
+## VTEX Image Sync V1
+
+La primera versión sincroniza imágenes que ya existen físicamente en PC020. No busca imágenes en Internet, no las edita y no modifica precio, stock, categoría, atributos ni activación de producto.
+
+Convención:
+
+```text
+C:\STECH_IMAGENES\...\82YU00XYLM\82YU00XYLM_01.jpg  -> principal siempre
+C:\STECH_IMAGENES\...\82YU00XYLM\82YU00XYLM_02.jpg
+C:\STECH_IMAGENES\...\82YU00XYLM\82YU00XYLM_03.jpg
+C:\STECH_IMAGENES\...\82YU00XYLM\82YU00XYLM_04.jpg
+```
+
+Si falta `_01`, el estado es `REVIEW` y no se sube automáticamente `_02+`.
+
+Configuración mínima real en `.env`:
+
+```env
+STECH_IMAGE_ROOT=C:\STECH_IMAGENES
+VTEX_ACCOUNT_NAME=ststore227
+VTEX_APP_KEY=<APP KEY REAL>
+VTEX_APP_TOKEN=<APP TOKEN REAL>
+VTEX_IMAGE_PUBLIC_BASE=https://mcp.artos.pe/vtex-images
+```
+
+Si el mismo `.env` ya contiene estas variables del canal V8, también sirven y no es necesario duplicarlas:
+
+```env
+CHN_CRED_VTEX_STECH_APP_KEY=<APP KEY REAL>
+CHN_CRED_VTEX_STECH_APP_TOKEN=<APP TOKEN REAL>
+```
+
+El secreto de URL temporal no requiere intervención manual. Si `VTEX_IMAGE_SIGNING_SECRET` no existe o queda vacío, el MCP genera uno seguro automáticamente al arrancar. Opcionalmente se pueden fijar:
+
+```env
+VTEX_IMAGE_SIGNING_SECRET=
+VTEX_IMAGE_URL_TTL_SECONDS=900
+VTEX_HTTP_TIMEOUT_SECONDS=30
+```
+
+`VTEX_IMAGE_PUBLIC_BASE` no requiere hosting adicional: `/vtex-images/{token}` lo sirve el mismo proceso `stech-mcp` de PC020 y Cloudflare Tunnel lo expone por `mcp.artos.pe`. La ruta no permite navegar carpetas; un token HMAC temporal autoriza solo un `product_image_id` y Part Number concretos.
+
+Cloudflare debe permitir que VTEX haga GET público a `/vtex-images/*`. Si Cloudflare Access exige login para todo `mcp.artos.pe`, se debe excluir esa ruta del login o usar otro hostname público del mismo Tunnel.
+
+Prueba real, después de aplicar `004` y reiniciar MCP:
+
+```text
+product_images_sync_local(partnumber="82YU00XYLM")
+product_images_validate(partnumber="82YU00XYLM")
+vtex_images_status(partnumber="82YU00XYLM")
+vtex_images_sync(partnumber="82YU00XYLM")
+```
+
+Resultado esperado para cuatro archivos `_01.._04`:
+
+```text
+local state     = READY
+local images    = 4
+SKU RefId       = 82YU00XYLM-S
+_01 IsMain      = true
+uploaded        = solo faltantes
+read-back       = verificado
+segunda corrida = 0 duplicados
+```
+
+La estrategia V1 es `MISSING_ONLY`: no borra ni reemplaza imágenes manuales existentes en VTEX.
 
 ## Prueba base contra producto real
 
@@ -212,6 +289,6 @@ La siguiente etapa no parte de supuestos. Para cada canal se revisa primero su d
 
 - **Coolbox:** mantener las 81 columnas reales, completar evidencia faltante y exportar preservando formato/validaciones.
 - **Falabella/Saga:** incorporar la plantilla real por categoría, sus campos obligatorios, límites, listas permitidas y reglas comerciales reales.
-- **VTEX:** revisar el schema real de Product/SKU y el mecanismo de carga elegido (JSON/API/XLSX) antes de mapear.
+- **VTEX:** reutilizar Product Workspace y sus imágenes aprobadas sin alterar el flujo de catálogo/precio/stock ya estabilizado en SCR V8.
 
 La misma ficha maestra y sus evidencias se reutilizan en los tres canales.
