@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from typing import Any
 
 
@@ -92,6 +93,7 @@ class ProductIdentityResearchService:
         output: list[dict[str, Any]] = []
         skipped_terminal_count = 0
         invalid_identity_count = 0
+        collision_identity_count = 0
         scanned_count = 0
         source_has_more = False
 
@@ -109,6 +111,12 @@ class ProductIdentityResearchService:
             state_map = self.research_repository.get_for_product_ids(
                 [int(row["producto_distribuidor_id"]) for row in products]
             )
+            collision_stats_fn = getattr(self.identity_repository, "partnumber_collision_stats", None)
+            collision_stats = (
+                collision_stats_fn([str(row.get("part_number") or "") for row in products])
+                if callable(collision_stats_fn)
+                else {}
+            )
             page_has_more = bool(page.get("has_more"))
 
             for position, product in enumerate(products):
@@ -118,6 +126,13 @@ class ProductIdentityResearchService:
                 pn = str(product.get("part_number") or "").strip().upper()
                 missing = self._missing_identifiers(product)
                 valid_pn, invalid_reason = classify_partnumber(pn)
+                stats = collision_stats.get(pn) or {}
+                brand_count = int(stats.get("active_brand_count") or 0)
+                active_row_count = int(stats.get("active_row_count") or 0)
+                if valid_pn and brand_count > 1:
+                    valid_pn = False
+                    invalid_reason = "PARTNUMBER_USED_BY_MULTIPLE_BRANDS"
+                    collision_identity_count += 1
 
                 if not valid_pn:
                     invalid_identity_count += 1
@@ -158,6 +173,9 @@ class ProductIdentityResearchService:
                         "pending_identifiers": pending,
                         "research_status": research_status,
                         "researchable": True,
+                        "identity_guard": "OK",
+                        "partnumber_active_row_count": active_row_count,
+                        "partnumber_active_brand_count": brand_count,
                     }
                 )
                 if len(output) >= requested:
@@ -180,9 +198,17 @@ class ProductIdentityResearchService:
             "scanned_count": scanned_count,
             "skipped_terminal_count": skipped_terminal_count,
             "invalid_identity_count": invalid_identity_count,
+            "collision_identity_count": collision_identity_count,
             "next_after_id": cursor_id,
             "has_more": source_has_more,
             "include_deferred": bool(include_deferred),
+            "bounded_search_policy": {
+                "max_query_variants_per_identifier": 2,
+                "max_strong_sources_per_identifier": 3,
+                "on_no_strong_evidence": "NO_ENCONTRADO",
+                "on_ambiguous_evidence": "RESEARCH_REQUIRED",
+                "continue_on_failure": True,
+            },
         }
 
     def record(
@@ -300,6 +326,57 @@ class ProductIdentityResearchService:
             "verified": verified,
             "promotion": promotion,
             "research": saved,
+        }
+
+    def record_batch(
+        self,
+        items: list[dict[str, Any]],
+        *,
+        approved_by: str = "CHATGPT",
+    ) -> dict[str, Any]:
+        rows = list(items or [])
+        if not rows:
+            raise ValueError("items is required")
+        if len(rows) > 100:
+            raise ValueError("record_batch accepts at most 100 outcomes")
+
+        results: list[dict[str, Any]] = []
+        status_counter: Counter[str] = Counter()
+        for position, item in enumerate(rows, start=1):
+            try:
+                result = self.record(
+                    producto_distribuidor_id=int(item.get("producto_distribuidor_id") or 0),
+                    partnumber=str(item.get("partnumber") or item.get("part_number") or ""),
+                    identifier_type=str(item.get("identifier_type") or ""),
+                    status=str(item.get("status") or ""),
+                    note=item.get("note"),
+                    value_text=item.get("value_text"),
+                    confidence_grade=item.get("confidence_grade"),
+                    source_url=item.get("source_url"),
+                    source_type=item.get("source_type"),
+                    source_partnumber=item.get("source_partnumber"),
+                    evidence_text=item.get("evidence_text"),
+                    approved_by=str(item.get("approved_by") or approved_by),
+                )
+            except (TypeError, ValueError) as exc:
+                result = {
+                    "recorded": False,
+                    "status": "VALIDATION_ERROR",
+                    "position": position,
+                    "partnumber": str(item.get("partnumber") or item.get("part_number") or "").strip().upper(),
+                    "identifier_type": str(item.get("identifier_type") or "").strip().upper(),
+                    "error": str(exc),
+                    "retryable": True,
+                }
+            status_counter[str(result.get("status") or "UNKNOWN").upper()] += 1
+            results.append(result)
+
+        return {
+            "count": len(results),
+            "recorded_count": sum(1 for row in results if bool(row.get("recorded"))),
+            "error_count": sum(1 for row in results if not bool(row.get("recorded"))),
+            "by_status": dict(status_counter),
+            "results": results,
         }
 
     def status(self, partnumber: str | None = None) -> dict[str, Any]:
