@@ -213,11 +213,50 @@ class ProductIdentityResearchRepository:
             )
             type_rows = list(cursor.fetchall())
             by_identifier = {str(row[0]): int(row[1]) for row in type_rows}
+
+            cursor = connection.cursor()
+            cursor.execute(
+                """
+                SELECT
+                    COALESCE(SUM(CAST(attempt_count AS BIGINT)), 0) AS attempt_count_total,
+                    COALESCE(MAX(attempt_count), 0) AS max_attempt_count
+                FROM dbo.product_identity_research
+                """ + where,
+                *params,
+            )
+            attempt_row = cursor.fetchall()[0]
+            attempt_count_total = int(attempt_row[0] or 0)
+            max_attempt_count = int(attempt_row[1] or 0)
+
+            items: list[dict[str, Any]] = []
+            if pn:
+                cursor = connection.cursor()
+                cursor.execute(
+                    """
+                    SELECT
+                        research_id,
+                        producto_distribuidor_id,
+                        partnumber,
+                        identifier_type,
+                        status,
+                        attempt_count,
+                        updated_at
+                    FROM dbo.product_identity_research
+                    WHERE partnumber = ?
+                    ORDER BY identifier_type, research_id
+                    """,
+                    pn,
+                )
+                items = self._rows_to_dicts(cursor, list(cursor.fetchall()))
+
             return {
                 "partnumber": pn,
                 "total": sum(by_status.values()),
                 "by_status": by_status,
                 "by_identifier": by_identifier,
+                "attempt_count_total": attempt_count_total,
+                "max_attempt_count": max_attempt_count,
+                "items": items,
             }
         finally:
             close = getattr(connection, "close", None)
