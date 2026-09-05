@@ -42,11 +42,15 @@ class FakeIdentityRepository:
                 "next_after_id": 12,
             }
         ]
+        self.collision_stats = {}
 
     def list_missing_identifiers(self, **kwargs):
         return self.pages.pop(0) if self.pages else {
             "products": [], "count": 0, "has_more": False, "next_after_id": kwargs.get("after_id", 0)
         }
+
+    def partnumber_collision_stats(self, partnumbers):
+        return dict(self.collision_stats)
 
 
 class FakeResearchRepository:
@@ -94,12 +98,12 @@ class FakePromotionService:
         return dict(self.result)
 
 
-def make_service(promotion_result=None):
+def make_service(promotion_result=None, identity_repository=None):
     research = FakeResearchRepository()
     verify = FakeVerificationService()
     promote = FakePromotionService(promotion_result)
     service = ProductIdentityResearchService(
-        identity_repository=FakeIdentityRepository(),
+        identity_repository=identity_repository or FakeIdentityRepository(),
         research_repository=research,
         verification_service=verify,
         promotion_service=promote,
@@ -125,6 +129,24 @@ def test_queue_skips_terminal_research_and_auto_marks_invalid_identity():
     assert any(row["producto_distribuidor_id"] == 11 and row["status"] == "INVALID_IDENTITY" for row in research.saved)
     assert result["skipped_terminal_count"] == 1
     assert result["invalid_identity_count"] == 1
+    assert result["bounded_search_policy"]["continue_on_failure"] is True
+
+
+def test_queue_blocks_partnumber_reused_across_multiple_brands():
+    identity = FakeIdentityRepository()
+    identity.collision_stats = {
+        "PN-10": {"active_row_count": 3, "active_brand_count": 2}
+    }
+    service, research, _, _ = make_service(identity_repository=identity)
+
+    result = service.queue(after_id=0, limit=100)
+
+    assert all(row["part_number"] != "PN-10" for row in result["products"])
+    assert result["collision_identity_count"] == 1
+    invalid = [row for row in research.saved if row["producto_distribuidor_id"] == 10]
+    assert invalid
+    assert invalid[0]["status"] == "INVALID_IDENTITY"
+    assert invalid[0]["note"] == "PARTNUMBER_USED_BY_MULTIPLE_BRANDS"
 
 
 def test_record_verified_outcome_verifies_promotes_and_persists_promoted_state():
@@ -193,6 +215,35 @@ def test_record_operational_conflict_persists_conflict_status():
 
     assert result["status"] == "CONFLICTO"
     assert research.saved[-1]["status"] == "CONFLICTO"
+
+
+def test_record_batch_continues_after_validation_error():
+    service, research, _, _ = make_service()
+
+    result = service.record_batch(
+        [
+            {
+                "producto_distribuidor_id": 10,
+                "partnumber": "PN-10",
+                "identifier_type": "UPC",
+                "status": "NO_ENCONTRADO",
+                "note": "bounded search exhausted",
+            },
+            {
+                "producto_distribuidor_id": 0,
+                "partnumber": "BROKEN",
+                "identifier_type": "EAN",
+                "status": "VERIFIED",
+            },
+        ]
+    )
+
+    assert result["count"] == 2
+    assert result["recorded_count"] == 1
+    assert result["error_count"] == 1
+    assert result["by_status"]["NO_ENCONTRADO"] == 1
+    assert result["by_status"]["VALIDATION_ERROR"] == 1
+    assert research.saved[-1]["status"] == "NO_ENCONTRADO"
 
 
 def test_status_returns_repository_summary():
