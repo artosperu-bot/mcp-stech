@@ -35,3 +35,21 @@ def barcode_type(value: str | None) -> str | None:
     if normalized is None or not validate_gtin(normalized):
         return None
     return _GTIN_LENGTHS.get(len(normalized))
+
+
+def ean13_from_upc(value: str | None) -> str | None:
+    """Return the 13-digit zero-padded GTIN representation of a valid UPC-A."""
+    normalized = normalize_gtin(value)
+    if normalized is None or barcode_type(normalized) != "UPC_A":
+        return None
+    candidate = "0" + normalized
+    return candidate if barcode_type(candidate) == "EAN_13" else None
+
+
+def upc_from_ean13(value: str | None) -> str | None:
+    """Return UPC-A when a valid EAN/GTIN-13 is the zero-padded form of UPC-A."""
+    normalized = normalize_gtin(value)
+    if normalized is None or barcode_type(normalized) != "EAN_13" or not normalized.startswith("0"):
+        return None
+    candidate = normalized[1:]
+    return candidate if barcode_type(candidate) == "UPC_A" else None
