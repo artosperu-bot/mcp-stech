@@ -154,6 +154,17 @@ class ProductIdentityResearchService:
                 research_status: dict[str, str] = {}
                 for identifier_type in missing:
                     state = state_map.get((product_id, identifier_type)) or {}
+                    if not state:
+                        state = self.research_repository.upsert(
+                            producto_distribuidor_id=product_id,
+                            partnumber=pn,
+                            identifier_type=identifier_type,
+                            status="PENDING",
+                            note="Queued for bounded exact-Part-Number research",
+                            actor_source="STECH_MCP_QUEUE",
+                            increment_attempt=False,
+                        )
+                        state_map[(product_id, identifier_type)] = state
                     status = str(state.get("status") or "PENDING").upper()
                     research_status[identifier_type] = status
                     if status in _TERMINAL_STATUSES:
