@@ -79,6 +79,40 @@ class ProductIdentityRepository:
             if callable(close):
                 close()
 
+    def partnumber_collision_stats(self, partnumbers: list[str]) -> dict[str, dict[str, Any]]:
+        normalized = sorted({str(value or "").strip().upper() for value in partnumbers if str(value or "").strip()})
+        if not normalized:
+            return {}
+        placeholders = ",".join("?" for _ in normalized)
+        connection = self._connection_factory()
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                f"""
+                SELECT
+                    UPPER(LTRIM(RTRIM(p.part_number))) AS part_number,
+                    COUNT_BIG(*) AS active_row_count,
+                    COUNT(DISTINCT COALESCE(NULLIF(UPPER(LTRIM(RTRIM(p.marca))), ''), '<EMPTY>')) AS active_brand_count
+                FROM dbo.PRD_PRODUCTO_DISTRIBUIDOR p
+                WHERE p.activo = 1
+                  AND UPPER(LTRIM(RTRIM(p.part_number))) IN ({placeholders})
+                GROUP BY UPPER(LTRIM(RTRIM(p.part_number)))
+                """,
+                *normalized,
+            )
+            rows = list(cursor.fetchall())
+            return {
+                str(row[0]).upper(): {
+                    "active_row_count": int(row[1]),
+                    "active_brand_count": int(row[2]),
+                }
+                for row in rows
+            }
+        finally:
+            close = getattr(connection, "close", None)
+            if callable(close):
+                close()
+
     def list_by_partnumber(self, partnumber: str) -> list[dict[str, Any]]:
         pn = str(partnumber or "").strip().upper()
         if not pn:
