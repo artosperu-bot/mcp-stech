@@ -16,6 +16,29 @@ _ALLOWED_SOURCE_TYPES = {
     "MANUAL",
 }
 
+_SOURCE_TYPE_ALIASES = {
+    "OFFICIAL": "MANUFACTURER",
+    "OFFICIAL_WEBSITE": "MANUFACTURER",
+    "MANUFACTURER_WEBSITE": "MANUFACTURER",
+    "BRAND_WEBSITE": "MANUFACTURER",
+    "SITIO_OFICIAL": "MANUFACTURER",
+    "PAGINA_OFICIAL": "MANUFACTURER",
+    "OFFICIAL_PDF": "OFFICIAL_DOCUMENT",
+    "DATASHEET": "OFFICIAL_DOCUMENT",
+    "MANUAL": "OFFICIAL_DOCUMENT",
+    "SUPPORT_DOCUMENT": "OFFICIAL_DOCUMENT",
+    "DOCUMENTO_OFICIAL": "OFFICIAL_DOCUMENT",
+    "DISTRIBUTOR": "AUTHORIZED_DISTRIBUTOR",
+    "AUTHORIZED_RESELLER": "AUTHORIZED_DISTRIBUTOR",
+    "MASTER_DISTRIBUTOR": "AUTHORIZED_DISTRIBUTOR",
+    "DISTRIBUTOR_AUTHORIZED": "AUTHORIZED_DISTRIBUTOR",
+    "DISTRIBUIDOR_AUTORIZADO": "AUTHORIZED_DISTRIBUTOR",
+    "RETAILER": "TRUSTED_RETAILER",
+    "TRUSTED_STORE": "TRUSTED_RETAILER",
+    "ECOMMERCE_RETAILER": "TRUSTED_RETAILER",
+    "RETAILER_CONFIABLE": "TRUSTED_RETAILER",
+}
+
 _RANK_BY_CONFIDENCE = {
     "A1": 100,
     "A2": 90,
@@ -50,6 +73,14 @@ _STRONG_EXACT_SOURCE_TYPES = {
 _IDENTIFIER_FIELDS = {"gtin", "ean", "upc"}
 
 
+def normalize_source_type(value: str | None) -> tuple[str, str | None]:
+    raw = str(value or "").strip().upper()
+    token = raw.replace("-", "_").replace(" ", "_")
+    canonical = _SOURCE_TYPE_ALIASES.get(token, token)
+    normalized_from = raw if canonical != raw else None
+    return canonical, normalized_from
+
+
 class ProductFieldVerificationService:
     """Persist a reviewed product fact together with auditable source evidence.
 
@@ -78,7 +109,7 @@ class ProductFieldVerificationService:
         pn = str(partnumber or "").strip().upper()
         code = str(field_code or "").strip().lower()
         grade = str(confidence_grade or "").strip().upper()
-        evidence_type = str(source_type or "").strip().upper()
+        evidence_type, normalized_from = normalize_source_type(source_type)
         source_pn = str(source_partnumber or "").strip().upper() or None
         url = str(source_url or "").strip() or None
         evidence = str(evidence_text or "").strip() or None
@@ -92,7 +123,8 @@ class ProductFieldVerificationService:
         if grade not in _RANK_BY_CONFIDENCE:
             raise ValueError("confidence_grade must be A1, A2, B, C, D or E")
         if evidence_type not in _ALLOWED_SOURCE_TYPES:
-            raise ValueError("unsupported source_type")
+            allowed = ", ".join(sorted(_ALLOWED_SOURCE_TYPES))
+            raise ValueError(f"unsupported source_type '{source_type}'. allowed: {allowed}")
         if not url or not evidence:
             raise ValueError("source_url and evidence_text are required for VERIFIED values")
 
@@ -141,6 +173,8 @@ class ProductFieldVerificationService:
                 "field_code": code,
                 "enrichment_id": saved.get("enrichment_id"),
                 "evidence_id": None,
+                "source_type": evidence_type,
+                "source_type_normalized_from": normalized_from,
             }
 
         evidence_row = self.enrichment_repository.add_evidence(
@@ -162,4 +196,6 @@ class ProductFieldVerificationService:
             "method": "VERIFIED",
             "confidence_grade": grade,
             "source_domain": str(parsed.hostname).lower(),
+            "source_type": evidence_type,
+            "source_type_normalized_from": normalized_from,
         }
