@@ -88,3 +88,57 @@ def test_low_confidence_source_cannot_verify_variant_sensitive_field():
             source_partnumber="82YU00XYLM",
             evidence_text="512 GB SSD",
         )
+
+
+def test_ean_is_normalized_and_checksum_validated_before_verified_write():
+    repo = FakeEnrichmentRepository()
+    service = ProductFieldVerificationService(repo)
+
+    service.verify(
+        partnumber="EP-T2510NBEGWW",
+        field_code="ean",
+        value_text="8806-0948 99528",
+        confidence_grade="B",
+        source_url="https://shamericas.example/product",
+        source_type="AUTHORIZED_DISTRIBUTOR",
+        source_partnumber="EP-T2510NBEGWW",
+        evidence_text="Exact part number and EAN",
+    )
+
+    assert repo.upserts[0]["value_text"] == "8806094899528"
+    assert repo.upserts[0]["value_number"] is None
+
+
+def test_bad_ean_checksum_is_rejected_before_persistence():
+    repo = FakeEnrichmentRepository()
+    service = ProductFieldVerificationService(repo)
+
+    with pytest.raises(ValueError, match="valid GS1 check digit"):
+        service.verify(
+            partnumber="EP-T2510NBEGWW",
+            field_code="ean",
+            value_text="8806094899529",
+            confidence_grade="B",
+            source_url="https://shamericas.example/product",
+            source_type="AUTHORIZED_DISTRIBUTOR",
+            source_partnumber="EP-T2510NBEGWW",
+            evidence_text="Exact part number and EAN",
+        )
+
+    assert repo.upserts == []
+
+
+def test_upc_requires_value_text_to_keep_leading_zeroes():
+    service = ProductFieldVerificationService(FakeEnrichmentRepository())
+
+    with pytest.raises(ValueError, match="value_text"):
+        service.verify(
+            partnumber="PN-UPC",
+            field_code="upc",
+            value_number=36000291452,
+            confidence_grade="A1",
+            source_url="https://manufacturer.example/p",
+            source_type="MANUFACTURER",
+            source_partnumber="PN-UPC",
+            evidence_text="UPC 036000291452",
+        )
