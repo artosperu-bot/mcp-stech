@@ -203,3 +203,35 @@ def test_missing_01_stops_before_any_vtex_write():
     assert result["reason"] == "main_image_01_missing"
     assert vtex.resolve_calls == []
     assert vtex.create_calls == []
+
+
+def test_status_is_not_synced_until_every_local_image_has_verified_publication():
+    local = FakeLocalImageService(_images())
+    vtex = FakeVtexClient()
+    publications = FakePublicationRepository()
+    publications.rows.append(
+        {
+            "product_image_publication_id": 1,
+            "product_image_id": 1,
+            "partnumber": "82YU00XYLM",
+            "channel": "VTEX",
+            "account_code": "VTEX_STECH",
+            "remote_sku_id": 251,
+            "status": "VERIFIED",
+            "position": 1,
+            "is_main": True,
+        }
+    )
+    service = VtexImageSyncService(
+        local_service=local,
+        vtex_client=vtex,
+        publication_repository=publications,
+        signer=FakeSigner(),
+        audit_repository=FakeAuditRepository(),
+    )
+
+    status = service.status("82YU00XYLM", account_code="VTEX_STECH")
+
+    assert status["state"] == "READY"
+    assert status["local_image_count"] == 4
+    assert status["verified_publication_count"] == 1
