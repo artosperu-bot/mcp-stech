@@ -41,7 +41,10 @@ def _write_product_images(root: Path, partnumber: str, positions: list[int]) -> 
     folder = root / "LENOVO" / "COMPUTADORAS_NOTEBOOK" / partnumber
     folder.mkdir(parents=True)
     for position in positions:
-        (folder / f"{partnumber}_{position:02d}.png").write_bytes(PNG_1X1)
+        # PNG decoders ignore trailing bytes; this keeps the image valid while
+        # giving each fixture a distinct SHA-256 like real product photos.
+        payload = PNG_1X1 + f"position={position}".encode("ascii")
+        (folder / f"{partnumber}_{position:02d}.png").write_bytes(payload)
     return folder
 
 
