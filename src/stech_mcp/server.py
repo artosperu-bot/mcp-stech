@@ -10,17 +10,24 @@ from stech_mcp.config import Settings
 from stech_mcp.db.connection import make_mcp_connection_factory, make_source_connection_factory, sql_ping
 from stech_mcp.db.deltron_image_repository import DeltronImageRepository
 from stech_mcp.db.enrichment_repository import EnrichmentRepository
+from stech_mcp.db.image_publication_repository import ImagePublicationRepository
 from stech_mcp.db.packaging_rule_repository import PackagingRuleRepository
+from stech_mcp.db.product_image_repository import ProductImageRepository
 from stech_mcp.db.product_master_repository import ProductMasterRepository
 from stech_mcp.db.product_repository import ProductRepository
 from stech_mcp.domain.packaging_resolver import resolve_package
 from stech_mcp.domain.packaging_rules import estimate_package_weight, validate_package_dimensions
+from stech_mcp.http.image_route import build_vtex_image_route
 from stech_mcp.services.coolbox_preview import _load_specs, _screen, build_coolbox_preview
+from stech_mcp.services.image_signing import ImageUrlSigner
+from stech_mcp.services.local_image_sync import LocalImageSyncService
 from stech_mcp.services.marketplace_preview import build_marketplace_preview
 from stech_mcp.services.product_approval import ProductApprovalService
 from stech_mcp.services.product_field_verification import ProductFieldVerificationService
 from stech_mcp.services.product_images import normalize_deltron_images
 from stech_mcp.services.product_prepare import ProductPrepareService
+from stech_mcp.services.vtex_image_client import VtexImageClient
+from stech_mcp.services.vtex_image_sync import VtexImageSyncService
 from stech_mcp.tools.core import health_snapshot
 
 settings = Settings()
@@ -31,6 +38,28 @@ deltron_image_repository = DeltronImageRepository(source_connection_factory)
 enrichment_repository = EnrichmentRepository(mcp_connection_factory)
 packaging_rule_repository = PackagingRuleRepository(mcp_connection_factory)
 product_master_repository = ProductMasterRepository(mcp_connection_factory)
+product_image_repository = ProductImageRepository(mcp_connection_factory)
+image_publication_repository = ImagePublicationRepository(mcp_connection_factory)
+local_image_sync_service = LocalImageSyncService(
+    root=settings.stech_image_root,
+    repository=product_image_repository,
+)
+image_signer = ImageUrlSigner(
+    secret=settings.vtex_image_signing_secret_value(),
+    public_base=settings.vtex_image_public_base,
+    ttl_seconds=settings.vtex_image_url_ttl_seconds,
+)
+vtex_image_client = (
+    VtexImageClient(
+        account_name=settings.vtex_account_name,
+        environment=settings.vtex_environment,
+        app_key=settings.vtex_app_key,
+        app_token=settings.vtex_app_token,
+        timeout_seconds=settings.vtex_http_timeout_seconds,
+    )
+    if settings.vtex_app_key and settings.vtex_app_token
+    else None
+)
 product_prepare_service = ProductPrepareService(
     product_repository=product_repository,
     enrichment_repository=enrichment_repository,
@@ -40,6 +69,13 @@ product_prepare_service = ProductPrepareService(
 )
 product_approval_service = ProductApprovalService(product_master_repository)
 product_field_verification_service = ProductFieldVerificationService(enrichment_repository)
+vtex_image_sync_service = VtexImageSyncService(
+    local_service=local_image_sync_service,
+    vtex_client=vtex_image_client,
+    publication_repository=image_publication_repository,
+    signer=image_signer,
+    audit_repository=product_master_repository,
+)
 
 mcp = MCPServer("STECH MCP")
 
@@ -429,6 +465,30 @@ def product_images_get(partnumber: str) -> dict[str, Any]:
     }
 
 
+@mcp.tool()
+def product_images_sync_local(partnumber: str) -> dict[str, Any]:
+    """Descubre imágenes locales exactas del PN, valida y persiste metadata en STECH_MCP."""
+    return local_image_sync_service.sync(partnumber)
+
+
+@mcp.tool()
+def product_images_validate(partnumber: str) -> dict[str, Any]:
+    """Valida el inventario local; `_01` es obligatorio y siempre es principal."""
+    return local_image_sync_service.validate(partnumber)
+
+
+@mcp.tool()
+def vtex_images_status(partnumber: str, account_code: str = "VTEX_STECH") -> dict[str, Any]:
+    """Consulta estado local/remoto de imágenes VTEX sin crear ni borrar imágenes."""
+    return vtex_image_sync_service.status(partnumber, account_code=account_code)
+
+
+@mcp.tool()
+def vtex_images_sync(partnumber: str, account_code: str = "VTEX_STECH") -> dict[str, Any]:
+    """Sube solo imágenes faltantes a VTEX, con `_01` como principal, y verifica por read-back."""
+    return vtex_image_sync_service.sync(partnumber, account_code=account_code)
+
+
 def main() -> None:
     if settings.mcp_transport == "stdio":
         mcp.run()
@@ -441,6 +501,14 @@ def main() -> None:
         stateless_http=True,
         json_response=True,
         transport_security=security,
+    )
+    app.routes.insert(
+        0,
+        build_vtex_image_route(
+            signer=image_signer,
+            image_repository=product_image_repository,
+            root=settings.stech_image_root,
+        ),
     )
     uvicorn.run(app, host=settings.mcp_host, port=settings.mcp_port)
 
