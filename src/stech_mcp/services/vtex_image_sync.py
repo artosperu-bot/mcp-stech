@@ -81,14 +81,26 @@ class VtexImageSyncService:
             account_code=str(account_code or "VTEX_STECH").strip().upper(),
             remote_sku_id=sku_id,
         )
+        local_image_ids = {
+            int(row["product_image_id"])
+            for row in (local.get("images") or [])
+            if row.get("product_image_id") is not None
+        }
+        verified_image_ids = {
+            int(row["product_image_id"])
+            for row in publications
+            if row.get("product_image_id") is not None
+            and str(row.get("status") or "").upper() == "VERIFIED"
+        }
+        fully_synced = bool(local_image_ids) and local_image_ids <= verified_image_ids
         result.update(
             {
-                "state": "SYNCED" if publications and all(str(row.get("status") or "").upper() == "VERIFIED" for row in publications) else "READY",
+                "state": "SYNCED" if fully_synced else "READY",
                 "reason": None,
                 "remote_sku_id": sku_id,
                 "remote_image_count": len(remote),
                 "publication_count": len(publications),
-                "verified_publication_count": sum(1 for row in publications if str(row.get("status") or "").upper() == "VERIFIED"),
+                "verified_publication_count": len(verified_image_ids),
             }
         )
         return result
