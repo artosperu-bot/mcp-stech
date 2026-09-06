@@ -98,8 +98,12 @@ class FakeVtexClient:
         self.account_name = "ststore227"
         self.environment = "vtexcommercestable.com.br"
         self.product = deepcopy(product or _seller_product())
+        self.external_product = None
         self.product_reads = []
         self.product_id_reads = []
+        self.resolve_calls = []
+        self.sku_context_reads = []
+        self.external_read_error = None
         self.token_calls = 0
         self.upload_calls = []
         self.update_calls = []
@@ -107,9 +111,24 @@ class FakeVtexClient:
         self.conflict_names = set()
         self.classic_pvt_calls = []
 
+    def resolve_sku_id(self, ref_id: str):
+        self.resolve_calls.append(ref_id)
+        return 251
+
+    def get_sku_context(self, sku_id: int):
+        self.sku_context_reads.append(int(sku_id))
+        return {
+            "Id": int(sku_id),
+            "ProductId": 251,
+            "ProductRefId": "82YU00XYLM",
+            "ManufacturerCode": "82YU00XYLM",
+        }
+
     def get_seller_product_by_external_id(self, external_id: str):
         self.product_reads.append(external_id)
-        return deepcopy(self.product)
+        if self.external_read_error is not None:
+            raise self.external_read_error
+        return deepcopy(self.external_product if self.external_product is not None else self.product)
 
     def get_seller_product(self, product_id: str):
         self.product_id_reads.append(str(product_id))
@@ -419,4 +438,52 @@ def test_sync_blocks_origin_mismatch_before_asset_or_product_write():
     assert result["state"] == "BLOCKED"
     assert result["reason"] == "seller_portal_origin_mismatch"
     assert vtex.upload_calls == []
+    assert vtex.update_calls == []
+
+def test_status_uses_catalog_system_product_id_then_full_seller_product():
+    vtex = FakeVtexClient(_seller_product())
+    vtex.external_read_error = VtexImageApiError(
+        operation="get_seller_product_by_external_id",
+        status=500,
+        body="external-id route failed",
+        url="https://ststore227.vtexcommercestable.com.br/api/catalog-seller-portal/products/external-id=82YU00XYLM",
+    )
+
+    status = _service(vtex).status("82YU00XYLM")
+
+    assert status["state"] == "READY"
+    assert status["product_id"] == "251"
+    assert vtex.resolve_calls == ["82YU00XYLM-S"]
+    assert vtex.sku_context_reads == [251]
+    assert vtex.product_id_reads == ["251"]
+    assert vtex.product_reads == []
+
+
+def test_sync_reads_full_product_by_product_id_when_external_shape_has_no_slug():
+    vtex = FakeVtexClient(_seller_product())
+    vtex.external_product = _seller_product()
+    vtex.external_product.pop("slug", None)
+
+    result = _service(vtex).sync("82YU00XYLM")
+
+    assert result["state"] == "SYNCED"
+    assert result["product_update_performed"] is True
+    assert vtex.product_reads == []
+    assert vtex.product_id_reads[0] == "251"
+    _, payload = vtex.update_calls[0]
+    assert payload["slug"] == "laptop-lenovo-v15-g4-amn-82yu00xylm"
+
+
+def test_sync_blocks_without_put_when_numeric_seller_product_still_has_no_slug():
+    product = _seller_product()
+    product.pop("slug")
+    vtex = FakeVtexClient(product)
+
+    result = _service(vtex).sync("82YU00XYLM")
+
+    assert result["state"] == "BLOCKED"
+    assert result["reason"] == "seller_portal_payload_invalid"
+    assert result["write_blocked"] is True
+    assert result["product_update_performed"] is False
+    assert "slug" in result["errors"][0]["error"]
     assert vtex.update_calls == []

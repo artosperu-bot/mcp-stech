@@ -230,3 +230,39 @@ def test_server_exposes_batch_tools():
 
     assert "def vtex_images_missing_list(" in source
     assert "def vtex_images_sync_batch(" in source
+
+def test_missing_list_exposes_vtex_http_operation_and_detail_for_blocked_items(tmp_path):
+    partnumber = "A-PN"
+    folder = tmp_path / partnumber
+    folder.mkdir()
+    (folder / f"{partnumber}_01.jpg").write_bytes(b"1")
+    rows = {
+        partnumber: {
+            "local": _local(partnumber),
+            "status": {
+                **_status(
+                    partnumber,
+                    "BLOCKED",
+                    [],
+                    reason="vtex_seller_portal_error",
+                    write_blocked=True,
+                ),
+                "vtex_error": {
+                    "operation": "get_seller_product",
+                    "status_http": 404,
+                    "body": "product not found",
+                    "message": "VTEX HTTP 404 en get_seller_product: product not found",
+                },
+            },
+            "sync": {"state": "BLOCKED"},
+        }
+    }
+    service = VtexImageBatchService(root=tmp_path, sync_service=FakeSyncService(rows))
+
+    result = service.missing_list(limit=10, include_blocked=True)
+
+    item = result["items"][0]
+    assert item["vtex_error"]["operation"] == "get_seller_product"
+    assert item["error_operation"] == "get_seller_product"
+    assert item["status_http"] == 404
+    assert item["error_detail"] == "product not found"

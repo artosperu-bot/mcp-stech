@@ -89,6 +89,16 @@ class VtexImageBatchService:
             "PARTIAL",
         }
 
+        raw_vtex_error = status.get("vtex_error")
+        vtex_error = dict(raw_vtex_error) if isinstance(raw_vtex_error, dict) else None
+        error_operation = None
+        status_http = None
+        error_detail = None
+        if vtex_error is not None:
+            error_operation = vtex_error.get("operation") or vtex_error.get("stage")
+            status_http = vtex_error.get("status_http")
+            error_detail = vtex_error.get("body") or vtex_error.get("message")
+
         return {
             "partnumber": partnumber,
             "state": state,
@@ -102,6 +112,10 @@ class VtexImageBatchService:
             "pending_files": pending_files,
             "remote_main_file": status.get("remote_main_file"),
             "transport": status.get("transport"),
+            "vtex_error": vtex_error,
+            "error_operation": error_operation,
+            "status_http": status_http,
+            "error_detail": error_detail,
         }
 
     def missing_list(

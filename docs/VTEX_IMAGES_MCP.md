@@ -153,3 +153,27 @@ cd C:\DESAROLLO\mcp-stech
 ```
 
 Esto evita ejecutar una copia vieja instalada en `site-packages` y garantiza que `python -m stech_mcp.server` cargue `src\stech_mcp\server.py` del repositorio actual.
+## Resolucion Seller Portal por ProductId
+
+Para sincronizar imagenes no se usa como fuente autoritativa el GET de Seller Portal por `external-id`, porque en algunos productos puede fallar o devolver una forma incompleta sin campos requeridos como `slug`.
+
+El flujo seguro es:
+
+1. Resolver el SKU por `Catalog System` usando el RefId `{PARTNUMBER}-S`.
+2. Leer el contexto del SKU y obtener su `ProductId` real.
+3. Leer el producto completo con `GET /api/catalog-seller-portal/products/{productId}`.
+4. Validar que ProductId, ProductRefId y SKU correspondan al Part Number esperado.
+5. Construir el PUT preservando todos los campos no-imagen, incluido `slug`.
+6. Cambiar solamente `images` del producto y del SKU.
+7. Hacer read-back y verificar que `_01` quede primero/principal.
+
+Si el producto completo sigue sin un campo obligatorio, la escritura se bloquea con `seller_portal_payload_invalid`.
+
+`vtex_images_missing_list` tambien expone, cuando VTEX devuelve un error:
+
+- `error_operation`
+- `status_http`
+- `error_detail`
+- `vtex_error`
+
+Esto permite diferenciar errores de Catalog System, Seller Portal y red sin ocultarlos bajo un motivo generico.

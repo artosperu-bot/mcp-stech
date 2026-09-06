@@ -406,16 +406,48 @@ class VtexImageSyncService:
         )
 
     def _read_seller_product(self, partnumber: str) -> tuple[dict[str, Any], dict[str, Any], int]:
-        product = dict(self.vtex_client.get_seller_product_by_external_id(partnumber) or {})
-        target_sku = _find_target_sku(product, partnumber)
+        normalized = _normalize_partnumber(partnumber)
+        sku_ref_id = f"{normalized}-S"
+        sku_id = int(self.vtex_client.resolve_sku_id(sku_ref_id))
+        if sku_id <= 0:
+            raise LookupError("catalog_system_sku_id_invalid")
+
+        context = dict(self.vtex_client.get_sku_context(sku_id) or {})
+        context_ref = _normalize_partnumber(context.get("ProductRefId") or context.get("productRefId"))
+        if context_ref and context_ref != normalized:
+            raise LookupError("catalog_system_product_ref_mismatch")
+
+        product_id_value = (
+            context.get("ProductId")
+            if context.get("ProductId") is not None
+            else context.get("productId")
+        )
+        product_id = str(product_id_value or "").strip()
+        if not product_id:
+            raise LookupError("catalog_system_product_id_missing")
+
+        product = dict(self.vtex_client.get_seller_product(product_id) or {})
+        returned_product_id = str(product.get("id") or "").strip()
+        if returned_product_id and returned_product_id != product_id:
+            raise LookupError("seller_portal_product_id_mismatch")
+
+        target_sku = _find_target_sku(product, normalized)
+        if target_sku is None:
+            matches = [
+                row
+                for row in _seller_skus(product)
+                if str(row.get("id") or "").strip() == str(sku_id)
+            ]
+            target_sku = matches[0] if len(matches) == 1 else None
         if target_sku is None:
             raise LookupError("seller_portal_sku_not_found")
+
         try:
-            sku_id = int(target_sku.get("id"))
+            seller_sku_id = int(target_sku.get("id"))
         except (TypeError, ValueError) as exc:
             raise LookupError("seller_portal_sku_id_invalid") from exc
-        if sku_id <= 0:
-            raise LookupError("seller_portal_sku_id_invalid")
+        if seller_sku_id != sku_id:
+            raise LookupError("seller_portal_sku_id_mismatch")
         return product, target_sku, sku_id
 
     def _mark_verified_publications(
