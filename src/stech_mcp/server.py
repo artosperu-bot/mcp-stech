@@ -26,6 +26,7 @@ from stech_mcp.services.product_approval import ProductApprovalService
 from stech_mcp.services.product_field_verification import ProductFieldVerificationService
 from stech_mcp.services.product_images import normalize_deltron_images
 from stech_mcp.services.product_prepare import ProductPrepareService
+from stech_mcp.services.vtex_image_batch import VtexImageBatchService
 from stech_mcp.services.vtex_image_client import VtexImageClient
 from stech_mcp.services.vtex_image_sync import VtexImageSyncService
 from stech_mcp.tools.core import health_snapshot
@@ -75,6 +76,10 @@ vtex_image_sync_service = VtexImageSyncService(
     publication_repository=image_publication_repository,
     signer=image_signer,
     audit_repository=product_master_repository,
+)
+vtex_image_batch_service = VtexImageBatchService(
+    root=settings.stech_image_root,
+    sync_service=vtex_image_sync_service,
 )
 
 mcp = MCPServer("STECH MCP")
@@ -487,6 +492,40 @@ def vtex_images_status(partnumber: str, account_code: str = "VTEX_STECH") -> dic
 def vtex_images_sync(partnumber: str, account_code: str = "VTEX_STECH") -> dict[str, Any]:
     """Sube solo imágenes faltantes a VTEX, con `_01` como principal, y verifica por read-back."""
     return vtex_image_sync_service.sync(partnumber, account_code=account_code)
+
+
+@mcp.tool()
+def vtex_images_missing_list(
+    after_partnumber: str = "",
+    limit: int = 50,
+    account_code: str = "VTEX_STECH",
+    include_blocked: bool = True,
+) -> dict[str, Any]:
+    """Lista PNs locales no sincronizados con VTEX; no escribe en VTEX."""
+    return vtex_image_batch_service.missing_list(
+        after_partnumber=after_partnumber,
+        limit=limit,
+        account_code=account_code,
+        include_blocked=include_blocked,
+    )
+
+
+@mcp.tool()
+def vtex_images_sync_batch(
+    partnumbers: list[str] | None = None,
+    after_partnumber: str = "",
+    limit: int = 20,
+    account_code: str = "VTEX_STECH",
+    stop_on_error: bool = False,
+) -> dict[str, Any]:
+    """Sincroniza PNs explícitos o los pendientes accionables, conservando las guardas del flujo individual."""
+    return vtex_image_batch_service.sync_batch(
+        partnumbers=partnumbers,
+        after_partnumber=after_partnumber,
+        limit=limit,
+        account_code=account_code,
+        stop_on_error=stop_on_error,
+    )
 
 
 def main() -> None:
