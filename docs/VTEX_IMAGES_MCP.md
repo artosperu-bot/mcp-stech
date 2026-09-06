@@ -177,3 +177,23 @@ Si el producto completo sigue sin un campo obligatorio, la escritura se bloquea 
 - `vtex_error`
 
 Esto permite diferenciar errores de Catalog System, Seller Portal y red sin ocultarlos bajo un motivo generico.
+## Resultado validado en produccion - 2026-09-06
+
+El flujo real de imagenes VTEX fue validado en produccion con `82YU00XYLM`.
+
+Resultado confirmado:
+
+- 4 imagenes remotas y 4 verificadas.
+- `_01` quedo como principal.
+- 3 assets nuevos subidos.
+- 1 asset existente reutilizado.
+- Asociacion del producto via Catalog Seller Portal.
+- Read-back final correcto.
+- Sin borrar imagenes existentes.
+- Sin modificar precio, stock, categoria, atributos ni activacion.
+- Classic Catalog PVT no se usa para este flujo porque en esta cuenta devolvia HTTP 500.
+- El transporte funcional es `Catalog System + Catalog Seller Portal + vtex.catalog-images`.
+
+La evidencia completa, URLs VTEX Assets, reglas de seguridad, resultados del modo masivo y limitaciones conocidas estan documentadas en:
+
+`docs/VTEX_IMAGES_VALIDACION_PRODUCCION_2026-09-06.md`
