@@ -8,21 +8,79 @@ from mcp.server.transport_security import TransportSecuritySettings
 
 from stech_mcp.config import Settings
 from stech_mcp.db.connection import make_mcp_connection_factory, make_source_connection_factory, sql_ping
+from stech_mcp.db.deltron_image_repository import DeltronImageRepository
 from stech_mcp.db.enrichment_repository import EnrichmentRepository
+from stech_mcp.db.image_publication_repository import ImagePublicationRepository
 from stech_mcp.db.packaging_rule_repository import PackagingRuleRepository
+from stech_mcp.db.product_image_repository import ProductImageRepository
+from stech_mcp.db.product_master_repository import ProductMasterRepository
 from stech_mcp.db.product_repository import ProductRepository
 from stech_mcp.domain.packaging_resolver import resolve_package
 from stech_mcp.domain.packaging_rules import estimate_package_weight, validate_package_dimensions
+from stech_mcp.http.image_route import build_vtex_image_route
 from stech_mcp.services.coolbox_preview import _load_specs, _screen, build_coolbox_preview
+from stech_mcp.services.image_signing import ImageUrlSigner
+from stech_mcp.services.local_image_sync import LocalImageSyncService
 from stech_mcp.services.marketplace_preview import build_marketplace_preview
+from stech_mcp.services.product_approval import ProductApprovalService
+from stech_mcp.services.product_field_verification import ProductFieldVerificationService
+from stech_mcp.services.product_images import normalize_deltron_images
+from stech_mcp.services.product_prepare import ProductPrepareService
+from stech_mcp.services.vtex_image_batch import VtexImageBatchService
+from stech_mcp.services.vtex_image_client import VtexImageClient
+from stech_mcp.services.vtex_image_sync import VtexImageSyncService
 from stech_mcp.tools.core import health_snapshot
 
 settings = Settings()
 source_connection_factory = make_source_connection_factory(settings)
 mcp_connection_factory = make_mcp_connection_factory(settings)
 product_repository = ProductRepository(source_connection_factory, view_name=settings.erp_product_view)
+deltron_image_repository = DeltronImageRepository(source_connection_factory)
 enrichment_repository = EnrichmentRepository(mcp_connection_factory)
 packaging_rule_repository = PackagingRuleRepository(mcp_connection_factory)
+product_master_repository = ProductMasterRepository(mcp_connection_factory)
+product_image_repository = ProductImageRepository(mcp_connection_factory)
+image_publication_repository = ImagePublicationRepository(mcp_connection_factory)
+local_image_sync_service = LocalImageSyncService(
+    root=settings.stech_image_root,
+    repository=product_image_repository,
+)
+image_signer = ImageUrlSigner(
+    secret=settings.vtex_image_signing_secret_value(),
+    public_base=settings.vtex_image_public_base,
+    ttl_seconds=settings.vtex_image_url_ttl_seconds,
+)
+vtex_image_client = (
+    VtexImageClient(
+        account_name=settings.vtex_account_name,
+        environment=settings.vtex_environment,
+        app_key=settings.vtex_app_key,
+        app_token=settings.vtex_app_token,
+        timeout_seconds=settings.vtex_http_timeout_seconds,
+    )
+    if settings.vtex_app_key and settings.vtex_app_token
+    else None
+)
+product_prepare_service = ProductPrepareService(
+    product_repository=product_repository,
+    enrichment_repository=enrichment_repository,
+    packaging_rule_repository=packaging_rule_repository,
+    product_master_repository=product_master_repository,
+    source_image_repository=deltron_image_repository,
+)
+product_approval_service = ProductApprovalService(product_master_repository)
+product_field_verification_service = ProductFieldVerificationService(enrichment_repository)
+vtex_image_sync_service = VtexImageSyncService(
+    local_service=local_image_sync_service,
+    vtex_client=vtex_image_client,
+    publication_repository=image_publication_repository,
+    signer=image_signer,
+    audit_repository=product_master_repository,
+)
+vtex_image_batch_service = VtexImageBatchService(
+    root=settings.stech_image_root,
+    sync_service=vtex_image_sync_service,
+)
 
 mcp = MCPServer("STECH MCP")
 
@@ -113,17 +171,19 @@ def product_history(partnumber: str, limit: int = 25) -> dict[str, Any]:
 
 @mcp.tool()
 def coolbox_preview(partnumber: str) -> dict[str, Any]:
-    """Prepara las 81 columnas Coolbox usando ficha maestra y empaque con precedencia oficial > regla."""
-    product = product_repository.get_by_partnumber(partnumber)
+    """Prepara las 81 columnas Coolbox usando Deltron + enriquecimientos aprobados + empaque resuelto."""
+    normalized = partnumber.strip().upper()
+    product = product_repository.get_by_partnumber(normalized)
     if product is None:
         return {
             "found": False,
-            "partnumber": partnumber.strip(),
+            "partnumber": normalized,
             "template": "Laptops-All in one",
             "fields": [],
         }
     package = _resolve_product_package(product, "LAPTOP")
-    preview = build_coolbox_preview(product, package=package)
+    enrichments = enrichment_repository.get_approved(normalized)
+    preview = build_coolbox_preview(product, package=package, enrichments=enrichments)
     return {"found": True, **preview}
 
 
@@ -180,22 +240,23 @@ def packaging_rule_get(screen_inches: float, category: str = "LAPTOP") -> dict[s
 @mcp.tool()
 def packaging_resolve(partnumber: str, category: str = "LAPTOP") -> dict[str, Any]:
     """Resuelve empaque: primero enrichment aprobado; si falta, aplica regla S-TECH compatible."""
-    product = product_repository.get_by_partnumber(partnumber)
+    normalized = partnumber.strip().upper()
+    product = product_repository.get_by_partnumber(normalized)
     if product is None:
-        return {"found": False, "partnumber": partnumber.strip(), "package": None}
+        return {"found": False, "partnumber": normalized, "package": None}
 
     screen_inches = _product_screen_inches(product)
     if screen_inches is None:
         return {
             "found": True,
-            "partnumber": partnumber.strip(),
+            "partnumber": normalized,
             "package": None,
             "reason": "screen_inches_not_found",
         }
 
     try:
         package = resolve_package(
-            partnumber=partnumber.strip(),
+            partnumber=normalized,
             category_code=category.strip().upper(),
             screen_inches=screen_inches,
             enrichment_repository=enrichment_repository,
@@ -206,7 +267,7 @@ def packaging_resolve(partnumber: str, category: str = "LAPTOP") -> dict[str, An
 
     return {
         "found": True,
-        "partnumber": partnumber.strip(),
+        "partnumber": normalized,
         "screen_inches": screen_inches,
         "package": package,
         "reason": None if package is not None else "no_package_rule_or_approved_enrichment",
@@ -216,11 +277,12 @@ def packaging_resolve(partnumber: str, category: str = "LAPTOP") -> dict[str, An
 @mcp.tool()
 def marketplace_preview(partnumber: str, marketplace: str, category: str = "LAPTOP") -> dict[str, Any]:
     """Genera preview multicanal; Fase 1 habilita COOLBOX/LAPTOP con ficha maestra reutilizable."""
-    product = product_repository.get_by_partnumber(partnumber)
+    normalized = partnumber.strip().upper()
+    product = product_repository.get_by_partnumber(normalized)
     if product is None:
         return {
             "found": False,
-            "partnumber": partnumber.strip(),
+            "partnumber": normalized,
             "marketplace": marketplace.strip().upper(),
             "category": category.strip().upper(),
             "fields": [],
@@ -236,6 +298,236 @@ def marketplace_preview(partnumber: str, marketplace: str, category: str = "LAPT
     return {"found": True, **preview}
 
 
+@mcp.tool()
+def product_prepare(partnumber: str, category: str = "LAPTOP") -> dict[str, Any]:
+    """Prepara y persiste el Product Workspace sin publicar en ningún marketplace."""
+    return product_prepare_service.prepare(partnumber, category=category)
+
+
+@mcp.tool()
+def product_master_get(partnumber: str) -> dict[str, Any]:
+    """Lee el Product Master persistido y su inventario de imágenes metadata."""
+    normalized = partnumber.strip().upper()
+    master = product_master_repository.get(normalized)
+    images = product_master_repository.list_images(normalized) if master is not None else []
+    return {
+        "found": master is not None,
+        "partnumber": normalized,
+        "master": master,
+        "images": images,
+    }
+
+
+@mcp.tool()
+def product_readiness_get(partnumber: str) -> dict[str, Any]:
+    """Devuelve readiness persistido, draft Coolbox e inventario real de imágenes."""
+    normalized = partnumber.strip().upper()
+    master = product_master_repository.get(normalized)
+    if master is None:
+        return {"found": False, "partnumber": normalized, "readiness": None}
+    draft = product_master_repository.get_latest_draft(normalized, "COOLBOX")
+    image_inventory = product_images_get(normalized)
+    return {
+        "found": True,
+        "partnumber": normalized,
+        "readiness": {
+            "state": master.get("readiness_state"),
+            "identity_score": master.get("identity_score"),
+            "technical_score": master.get("technical_score"),
+            "image_score": master.get("image_score"),
+            "package_score": master.get("package_score"),
+            "coolbox_score": master.get("coolbox_score"),
+            "image_count": image_inventory.get("image_count", 0),
+            "source_image_count": image_inventory.get("source_image_count", 0),
+            "workspace_image_count": image_inventory.get("workspace_image_count", 0),
+            "usable_image_count": image_inventory.get("usable_image_count", 0),
+            "approved_image_count": image_inventory.get("approved_image_count", 0),
+            "coolbox_field_count": (draft or {}).get("field_count") or master.get("coolbox_field_count"),
+            "coolbox_required_missing_count": (draft or {}).get("required_missing_count") or master.get("coolbox_required_missing_count"),
+            "coolbox_estimated_count": (draft or {}).get("estimated_count") or master.get("coolbox_estimated_count"),
+            "coolbox_approval_status": (draft or {}).get("approval_status") or master.get("coolbox_approval_status"),
+        },
+    }
+
+
+@mcp.tool()
+def channel_draft_get(partnumber: str, marketplace: str = "COOLBOX") -> dict[str, Any]:
+    """Devuelve el último draft versionado de un canal; V1 usa principalmente COOLBOX."""
+    normalized = partnumber.strip().upper()
+    market = marketplace.strip().upper()
+    draft = product_master_repository.get_latest_draft(normalized, market)
+    if draft is None:
+        return {"found": False, "partnumber": normalized, "marketplace": market, "draft": None}
+    payload = draft.get("payload") if isinstance(draft.get("payload"), dict) else {}
+    out = {**draft, "fields": list(payload.get("fields") or [])}
+    return {"found": True, "partnumber": normalized, "marketplace": market, "draft": out}
+
+
+@mcp.tool()
+def product_approve(
+    partnumber: str,
+    marketplace: str = "COOLBOX",
+    approved_by: str = "CHATGPT",
+    note: str | None = None,
+) -> dict[str, Any]:
+    """Aprueba la versión exacta del último draft solo si ficha, imágenes y datos comerciales están listos."""
+    return product_approval_service.approve(
+        partnumber,
+        marketplace=marketplace,
+        approved_by=approved_by,
+        note=note,
+    )
+
+
+@mcp.tool()
+def product_field_verify(
+    partnumber: str,
+    field_code: str,
+    confidence_grade: str,
+    source_url: str,
+    source_type: str,
+    source_partnumber: str,
+    evidence_text: str,
+    value_text: str | None = None,
+    value_number: float | None = None,
+    unit: str | None = None,
+) -> dict[str, Any]:
+    """Guarda un dato técnico como VERIFIED solo junto con evidencia trazable y reglas de coincidencia de variante."""
+    return product_field_verification_service.verify(
+        partnumber=partnumber,
+        field_code=field_code,
+        value_text=value_text,
+        value_number=value_number,
+        unit=unit,
+        confidence_grade=confidence_grade,
+        source_url=source_url,
+        source_type=source_type,
+        source_partnumber=source_partnumber,
+        evidence_text=evidence_text,
+    )
+
+
+@mcp.tool()
+def product_enrichment_get(partnumber: str) -> dict[str, Any]:
+    """Devuelve todos los enriquecimientos aprobados que el Product Workspace reutiliza."""
+    normalized = partnumber.strip().upper()
+    rows = enrichment_repository.get_approved(normalized)
+    return {
+        "found": bool(rows),
+        "partnumber": normalized,
+        "count": len(rows),
+        "enrichments": rows,
+    }
+
+
+@mcp.tool()
+def product_images_get(partnumber: str) -> dict[str, Any]:
+    """Lee imágenes reales de Deltron y variantes del Workspace sin exigir edición de imágenes."""
+    normalized = partnumber.strip().upper()
+    product = product_repository.get_by_partnumber(normalized)
+    if product is None:
+        return {
+            "found": False,
+            "partnumber": normalized,
+            "source_image_count": 0,
+            "workspace_image_count": 0,
+            "image_count": 0,
+            "usable_image_count": 0,
+            "approved_image_count": 0,
+            "images": [],
+        }
+
+    source_product_id = product.get("producto_distribuidor_id")
+    source_rows = (
+        deltron_image_repository.list_for_product(int(source_product_id))
+        if source_product_id is not None
+        else []
+    )
+    source_images = normalize_deltron_images(normalized, source_rows)
+    workspace_images = product_master_repository.list_images(normalized)
+    images = [*source_images, *workspace_images]
+    usable = sum(
+        1
+        for image in images
+        if bool(image.get("is_approved")) or bool(image.get("source_eligible"))
+    )
+    approved = sum(1 for image in images if bool(image.get("is_approved")))
+
+    return {
+        "found": True,
+        "partnumber": normalized,
+        "producto_distribuidor_id": source_product_id,
+        "source_table": "DB_DISTRIBUIDORES.dbo.PRD_DELTRON_IMAGEN",
+        "source_image_count": len(source_images),
+        "workspace_image_count": len(workspace_images),
+        "image_count": len(images),
+        "usable_image_count": usable,
+        "approved_image_count": approved,
+        "editing_required": False,
+        "source_images": source_images,
+        "workspace_images": workspace_images,
+        "images": images,
+    }
+
+
+@mcp.tool()
+def product_images_sync_local(partnumber: str) -> dict[str, Any]:
+    """Descubre imágenes locales exactas del PN, valida y persiste metadata en STECH_MCP."""
+    return local_image_sync_service.sync(partnumber)
+
+
+@mcp.tool()
+def product_images_validate(partnumber: str) -> dict[str, Any]:
+    """Valida el inventario local; `_01` es obligatorio y siempre es principal."""
+    return local_image_sync_service.validate(partnumber)
+
+
+@mcp.tool()
+def vtex_images_status(partnumber: str, account_code: str = "VTEX_STECH") -> dict[str, Any]:
+    """Consulta estado local/remoto de imágenes VTEX sin crear ni borrar imágenes."""
+    return vtex_image_sync_service.status(partnumber, account_code=account_code)
+
+
+@mcp.tool()
+def vtex_images_sync(partnumber: str, account_code: str = "VTEX_STECH") -> dict[str, Any]:
+    """Sube solo imágenes faltantes a VTEX, con `_01` como principal, y verifica por read-back."""
+    return vtex_image_sync_service.sync(partnumber, account_code=account_code)
+
+
+@mcp.tool()
+def vtex_images_missing_list(
+    after_partnumber: str = "",
+    limit: int = 50,
+    account_code: str = "VTEX_STECH",
+    include_blocked: bool = True,
+) -> dict[str, Any]:
+    """Lista PNs locales no sincronizados con VTEX; no escribe en VTEX."""
+    return vtex_image_batch_service.missing_list(
+        after_partnumber=after_partnumber,
+        limit=limit,
+        account_code=account_code,
+        include_blocked=include_blocked,
+    )
+
+
+@mcp.tool()
+def vtex_images_sync_batch(
+    partnumbers: list[str] | None = None,
+    after_partnumber: str = "",
+    limit: int = 20,
+    account_code: str = "VTEX_STECH",
+    stop_on_error: bool = False,
+) -> dict[str, Any]:
+    """Sincroniza PNs explícitos o los pendientes accionables, conservando las guardas del flujo individual."""
+    return vtex_image_batch_service.sync_batch(
+        partnumbers=partnumbers,
+        after_partnumber=after_partnumber,
+        limit=limit,
+        account_code=account_code,
+        stop_on_error=stop_on_error,
+    )
+
+
 def main() -> None:
     if settings.mcp_transport == "stdio":
         mcp.run()
@@ -248,6 +540,14 @@ def main() -> None:
         stateless_http=True,
         json_response=True,
         transport_security=security,
+    )
+    app.routes.insert(
+        0,
+        build_vtex_image_route(
+            signer=image_signer,
+            image_repository=product_image_repository,
+            root=settings.stech_image_root,
+        ),
     )
     uvicorn.run(app, host=settings.mcp_host, port=settings.mcp_port)
 
