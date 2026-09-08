@@ -135,3 +135,35 @@ ORDER BY product_fact_candidate_id;
             close = getattr(connection, "close", None)
             if callable(close):
                 close()
+
+    def update_state(self, candidate_id: int, state: str) -> dict[str, Any]:
+        candidate_state = str(state or "").strip().upper()
+        if candidate_state not in CANDIDATE_STATES:
+            raise ValueError(f"invalid candidate state: {state}")
+        connection = self._connection_factory()
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                """
+UPDATE dbo.product_fact_candidate
+SET state = ?, updated_at = SYSUTCDATETIME()
+OUTPUT INSERTED.product_fact_candidate_id, INSERTED.state
+WHERE product_fact_candidate_id = ?;
+""",
+                candidate_state,
+                int(candidate_id),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                raise LookupError(f"fact candidate not found: {candidate_id}")
+            connection.commit()
+            return {"product_fact_candidate_id": int(row[0]), "state": str(row[1])}
+        except Exception:
+            rollback = getattr(connection, "rollback", None)
+            if callable(rollback):
+                rollback()
+            raise
+        finally:
+            close = getattr(connection, "close", None)
+            if callable(close):
+                close()
