@@ -70,18 +70,29 @@ VALUES (?, ?, ?, ?, N'WORKER', ?, ?);
             cur = conn.cursor()
             cur.execute(
                 """
-DECLARE @attempt_number INT;
-SELECT @attempt_number = ISNULL(MAX(attempt_number), 0) + 1
-FROM dbo.product_work_attempt WITH (UPDLOCK, HOLDLOCK)
-WHERE product_work_item_id = ?;
+UPDATE dbo.product_work_item WITH (UPDLOCK, ROWLOCK)
+SET attempt_count = attempt_count + 1,
+    updated_at = SYSUTCDATETIME()
+OUTPUT INSERTED.attempt_count
+WHERE product_work_item_id = ?
+  AND attempt_count < max_attempts;
+""",
+                item_id,
+            )
+            attempt_row = cur.fetchone()
+            if attempt_row is None:
+                raise ValueError("max attempts reached or product work item not found")
+            attempt_number = int(attempt_row[0])
 
+            cur.execute(
+                """
 INSERT INTO dbo.product_work_attempt(
     product_work_job_id, product_work_item_id, attempt_number, worker_id
 )
 OUTPUT INSERTED.product_work_attempt_id, INSERTED.attempt_number
-VALUES (?, ?, @attempt_number, ?);
+VALUES (?, ?, ?, ?);
 """,
-                item_id, job_id, item_id, worker_id,
+                job_id, item_id, attempt_number, worker_id,
             )
             row = cur.fetchone()
             if row is None:
