@@ -19,12 +19,14 @@ class FakeRepository:
         self.released = 0
 
     def claim_next(self, worker_id, lease_seconds):
-        if not self.queue:
-            return None
-        item_id = self.queue.pop(0)
-        item = self.items[item_id]
-        item["claimed_by"] = worker_id
-        return dict(item)
+        while self.queue:
+            item_id = self.queue.pop(0)
+            item = self.items[item_id]
+            if item.get("attempt_count", 0) >= item.get("max_attempts", 3):
+                continue
+            item["claimed_by"] = worker_id
+            return dict(item)
+        return None
 
     def transition_item(self, item_id, *, status, current_step=None, progress_pct=None, error_code=None, error_detail=None):
         item = self.items[item_id]
@@ -39,9 +41,12 @@ class FakeRepository:
 
     def schedule_retry(self, item_id, *, error_code, error_detail, delay_seconds):
         item = self.items[item_id]
-        item["status"] = "FAILED_RETRYABLE"
-        item["attempt_count"] = item.get("attempt_count", 0) + 1
-        item["next_attempt_at"] = delay_seconds
+        if item.get("attempt_count", 0) >= item.get("max_attempts", 3):
+            item["status"] = "FAILED"
+            item["next_attempt_at"] = None
+        else:
+            item["status"] = "FAILED_RETRYABLE"
+            item["next_attempt_at"] = delay_seconds
         item["last_error_code"] = error_code
         item["last_error_detail"] = error_detail
         return dict(item)
@@ -51,7 +56,10 @@ class FakeRepository:
         return True
 
     def record_attempt_start(self, item, worker_id):
-        return {"attempt_id": len(self.attempt_ends) + 1, "attempt_number": item.get("attempt_count", 0) + 1}
+        stored = self.items[item["item_id"]]
+        stored["attempt_count"] = stored.get("attempt_count", 0) + 1
+        attempt_number = stored["attempt_count"]
+        return {"attempt_id": attempt_number, "attempt_number": attempt_number}
 
     def record_attempt_end(self, attempt_id, *, outcome_status, error_code=None, error_detail=None):
         self.attempt_ends.append((attempt_id, outcome_status, error_code, error_detail))
@@ -67,7 +75,7 @@ class FakeRepository:
         return 0
 
 
-def _item(item_id, partnumber, work_type="ENRICH_TECHNICAL", attempt_count=0):
+def _item(item_id, partnumber, work_type="ENRICH_TECHNICAL", attempt_count=0, max_attempts=3):
     return {
         "item_id": item_id,
         "job_id": 7,
@@ -75,6 +83,7 @@ def _item(item_id, partnumber, work_type="ENRICH_TECHNICAL", attempt_count=0):
         "work_type": work_type,
         "status": "QUEUED",
         "attempt_count": attempt_count,
+        "max_attempts": max_attempts,
     }
 
 
@@ -96,6 +105,8 @@ def test_worker_failure_does_not_stop_next_item():
     assert worker.run_once() is True
     assert repo.items[1]["status"] == "FAILED"
     assert repo.items[2]["status"] == "COMPLETED"
+    assert repo.items[1]["attempt_count"] == 1
+    assert repo.items[2]["attempt_count"] == 1
 
 
 def test_retryable_failure_gets_deterministic_backoff_and_releases_claim():
@@ -112,10 +123,30 @@ def test_retryable_failure_gets_deterministic_backoff_and_releases_claim():
 
     item = repo.items[1]
     assert item["status"] == "FAILED_RETRYABLE"
+    assert item["attempt_count"] == 1
     assert item["next_attempt_at"] == 60
     assert retry_delay_seconds(1) == 60
     assert retry_delay_seconds(2) == 120
     assert retry_delay_seconds(99) == 3600
+
+
+def test_retryable_failure_at_max_attempts_becomes_terminal_failed():
+    repo = FakeRepository([_item(1, "PN1", attempt_count=2, max_attempts=3)])
+    dispatcher = ProductWorkDispatcher()
+
+    def handler(item, progress):
+        progress("ANALYZING_MISSING_FIELDS", 10)
+        raise RetryableWorkError("SOURCE_TIMEOUT", "temporary")
+
+    dispatcher.register("ENRICH_TECHNICAL", handler)
+    worker = ProductWorkWorker(repo, dispatcher, worker_id="worker-a")
+    worker.run_once()
+
+    item = repo.items[1]
+    assert item["attempt_count"] == 3
+    assert item["status"] == "FAILED"
+    assert item["next_attempt_at"] is None
+    assert repo.attempt_ends[-1][1] == "FAILED"
 
 
 def test_progress_callback_renews_lease_before_state_update():
