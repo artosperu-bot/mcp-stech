@@ -65,6 +65,65 @@ def test_sync_discovers_exact_partnumber_images_and_orders_01_as_main(tmp_path):
     assert all(row["is_approved"] is True for row in result["images"])
 
 
+def test_sync_accepts_padded_and_unpadded_numeric_suffixes(tmp_path):
+    partnumber = "82YU00XYLM"
+    folder = tmp_path / "LENOVO" / "COMPUTADORAS_NOTEBOOK" / partnumber
+    folder.mkdir(parents=True)
+    _write_png(folder / f"{partnumber}_1.png", 1)
+    _write_png(folder / f"{partnumber}_02.png", 2)
+    _write_png(folder / f"{partnumber}_003.png", 3)
+    repo = FakeImageRepository()
+    service = LocalImageSyncService(root=tmp_path, repository=repo)
+
+    result = service.sync(partnumber)
+
+    assert result["state"] == "READY"
+    assert result["image_count"] == 3
+    assert [row["position"] for row in result["images"]] == [1, 2, 3]
+    assert [Path(row["storage_path"]).name for row in result["images"]] == [
+        f"{partnumber}_1.png",
+        f"{partnumber}_02.png",
+        f"{partnumber}_003.png",
+    ]
+    assert result["images"][0]["is_main"] is True
+
+
+def test_sync_treats_1_and_01_as_the_same_position_conflict(tmp_path):
+    partnumber = "82YU00XYLM"
+    folder = tmp_path / "LENOVO" / "COMPUTADORAS_NOTEBOOK" / partnumber
+    folder.mkdir(parents=True)
+    _write_png(folder / f"{partnumber}_1.png", 1)
+    _write_png(folder / f"{partnumber}_01.png", 101)
+    repo = FakeImageRepository()
+    service = LocalImageSyncService(root=tmp_path, repository=repo)
+
+    result = service.sync(partnumber)
+
+    assert result["state"] == "REVIEW"
+    assert result["reason"] == "invalid_or_conflicting_images"
+    assert result["image_count"] == 1
+    assert [row["position"] for row in result["images"]] == [1]
+    assert any(row["reason"] == "duplicate_position:1" for row in result["errors"])
+
+
+def test_sync_ignores_non_numeric_or_overwide_suffixes(tmp_path):
+    partnumber = "82YU00XYLM"
+    folder = tmp_path / "LENOVO" / "COMPUTADORAS_NOTEBOOK" / partnumber
+    folder.mkdir(parents=True)
+    _write_png(folder / f"{partnumber}_01.png", 1)
+    _write_png(folder / f"{partnumber}_front.png", 2)
+    _write_png(folder / f"{partnumber}_0001.png", 3)
+    _write_png(folder / f"{partnumber}_01_extra.png", 4)
+    repo = FakeImageRepository()
+    service = LocalImageSyncService(root=tmp_path, repository=repo)
+
+    result = service.sync(partnumber)
+
+    assert result["state"] == "READY"
+    assert result["image_count"] == 1
+    assert Path(result["images"][0]["storage_path"]).name == f"{partnumber}_01.png"
+
+
 def test_sync_is_idempotent_for_same_binary_files(tmp_path):
     partnumber = "82YU00XYLM"
     _write_product_images(tmp_path, partnumber, [1, 2])
@@ -77,6 +136,26 @@ def test_sync_is_idempotent_for_same_binary_files(tmp_path):
     assert first["image_count"] == 2
     assert second["image_count"] == 2
     assert len(repo.rows) == 2
+
+
+def test_validate_uses_current_file_when_same_position_binary_changes(tmp_path):
+    partnumber = "82YU00XYLM"
+    folder = _write_product_images(tmp_path, partnumber, [1])
+    path = folder / f"{partnumber}_01.png"
+    repo = FakeImageRepository()
+    service = LocalImageSyncService(root=tmp_path, repository=repo)
+
+    first = service.sync(partnumber)
+    first_id = first["images"][0]["product_image_id"]
+    first_hash = first["images"][0]["sha256_hash"]
+    _write_png(path, 99)
+    validation = service.validate(partnumber)
+
+    assert validation["state"] == "READY"
+    assert validation["image_count"] == 1
+    assert validation["images"][0]["position"] == 1
+    assert validation["images"][0]["sha256_hash"] != first_hash
+    assert validation["images"][0]["product_image_id"] != first_id
 
 
 def test_validate_returns_review_and_no_main_when_01_is_missing(tmp_path):
