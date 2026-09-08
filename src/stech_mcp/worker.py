@@ -34,6 +34,10 @@ def retry_delay_seconds(failed_attempt_count: int) -> int:
     return min(60 * (2 ** (attempt - 1)), 3600)
 
 
+def worker_enabled() -> bool:
+    return os.getenv("STECH_WORKER_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+
+
 class ProductWorkWorker:
     def __init__(
         self,
@@ -109,7 +113,14 @@ class ProductWorkWorker:
 
         item_id = self._item_id(item)
         attempt = self._record_attempt_start(item)
-        self._record_event(item, "CLAIMED", status=str(item.get("status") or "QUEUED"))
+        if attempt is not None:
+            item["attempt_count"] = int(attempt["attempt_number"])
+        self._record_event(
+            item,
+            "CLAIMED",
+            status=str(item.get("status") or "QUEUED"),
+            detail={"attempt_number": item.get("attempt_count")},
+        )
         current_status = str(item.get("status") or "QUEUED").strip().upper()
 
         try:
@@ -134,8 +145,6 @@ class ProductWorkWorker:
                 nonlocal item, current_status
                 target = str(state or "").strip().upper()
                 pct = max(0, min(int(percent), 100))
-                # Renew before any significant update so long-running handlers
-                # cannot accidentally lose ownership mid-step.
                 if not self.repository.renew_claim(item_id, self.worker_id, self.lease_seconds):
                     raise RetryableWorkError("LEASE_LOST", "worker lease could not be renewed")
                 if target and target != current_status:
@@ -175,21 +184,35 @@ class ProductWorkWorker:
             return True
 
         except RetryableWorkError as exc:
-            failed_so_far = int(item.get("attempt_count") or 0) + 1
-            delay = retry_delay_seconds(failed_so_far)
+            attempt_number = int((attempt or {}).get("attempt_number") or item.get("attempt_count") or 1)
+            delay = retry_delay_seconds(attempt_number)
             item = self.repository.schedule_retry(
                 item_id,
                 error_code=exc.code,
                 error_detail=exc.detail,
                 delay_seconds=delay,
             )
+            outcome = str(item.get("status") or "FAILED_RETRYABLE").strip().upper()
             self._record_attempt_end(
                 attempt,
-                outcome_status="FAILED_RETRYABLE",
+                outcome_status=outcome,
                 error_code=exc.code,
                 error_detail=exc.detail,
             )
-            self._record_event(item, "RETRY_SCHEDULED", status="FAILED_RETRYABLE", detail={"delay_seconds": delay})
+            if outcome == "FAILED":
+                self._record_event(
+                    item,
+                    "FAILED",
+                    status="FAILED",
+                    detail={"error_code": exc.code, "reason": "MAX_ATTEMPTS_REACHED"},
+                )
+            else:
+                self._record_event(
+                    item,
+                    "RETRY_SCHEDULED",
+                    status="FAILED_RETRYABLE",
+                    detail={"delay_seconds": delay, "attempt_number": attempt_number},
+                )
             self._refresh_summary(item)
             return True
 
@@ -235,6 +258,10 @@ class ProductWorkWorker:
 
 
 def build_worker_from_environment() -> ProductWorkWorker:
+    concurrency = int(os.getenv("STECH_WORKER_CONCURRENCY", "1"))
+    if concurrency != 1:
+        raise ValueError("Product Work V2 supports STECH_WORKER_CONCURRENCY=1 only")
+
     settings = Settings()
     repository = ProductWorkExecutionRepository(make_mcp_connection_factory(settings))
     dispatcher = ProductWorkDispatcher()
@@ -250,6 +277,9 @@ def build_worker_from_environment() -> ProductWorkWorker:
 
 
 def main() -> None:
+    if not worker_enabled():
+        return
+
     worker = build_worker_from_environment()
     stop_event = threading.Event()
 
