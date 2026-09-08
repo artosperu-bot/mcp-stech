@@ -13,7 +13,7 @@ class FakeCursor:
     def execute(self, sql, *params):
         self.executions.append((sql, params))
         upper = sql.upper()
-        if "OUTPUT INSERTED.PRODUCT_WORK_ITEM_ID" in upper:
+        if "OUTPUT" in upper and "INSERTED.PRODUCT_WORK_ITEM_ID" in upper:
             self.description = [
                 ("product_work_item_id",), ("product_work_job_id",), ("work_type",),
                 ("partnumber",), ("category_code",), ("channel_code",),
