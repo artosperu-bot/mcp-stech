@@ -8,6 +8,8 @@ registered tools, the batch service, and Product Loader. Product Work V2 tools
 are registered additively after that swap; no existing tool is replaced.
 """
 
+import os
+
 from stech_mcp import server as _server
 from stech_mcp.db.product_work_control_repository import ProductWorkControlRepository
 from stech_mcp.services.product_work_service import ProductWorkService
@@ -32,7 +34,10 @@ _server.product_loader_orchestrator.vtex_image_sync_service = vtex_image_sync_se
 # Product Work V2 is additive and uses its own tables/repository. It does not
 # replace product_loader_job or any existing VTEX service.
 product_work_repository = ProductWorkControlRepository(_server.mcp_connection_factory)
-product_work_service = ProductWorkService(product_work_repository)
+product_work_service = ProductWorkService(
+    product_work_repository,
+    max_attempts=int(os.getenv("STECH_WORKER_MAX_ATTEMPTS", "3")),
+)
 product_work_tools = register_product_work_tools(
     _server.mcp,
     product_work_service,
