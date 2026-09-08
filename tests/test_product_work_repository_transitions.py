@@ -16,7 +16,7 @@ class FakeCursor:
         upper = sql.upper()
         if "SELECT STATUS" in upper:
             self.description = [("status",)]
-        elif "OUTPUT INSERTED.PRODUCT_WORK_ITEM_ID" in upper:
+        elif "OUTPUT" in upper and "INSERTED.PRODUCT_WORK_ITEM_ID" in upper:
             self.description = [
                 ("product_work_item_id",), ("product_work_job_id",), ("work_type",),
                 ("partnumber",), ("category_code",), ("channel_code",),
