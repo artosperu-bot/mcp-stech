@@ -213,15 +213,18 @@ WHERE product_work_item_id = ?;
             cur.execute(
                 """
 UPDATE dbo.product_work_item
-SET status = N'FAILED_RETRYABLE',
-    current_step = N'retry scheduled',
-    attempt_count = attempt_count + 1,
-    next_attempt_at = DATEADD(SECOND, ?, SYSUTCDATETIME()),
+SET status = CASE WHEN attempt_count >= max_attempts THEN N'FAILED' ELSE N'FAILED_RETRYABLE' END,
+    current_step = CASE WHEN attempt_count >= max_attempts THEN N'max attempts reached' ELSE N'retry scheduled' END,
+    next_attempt_at = CASE
+        WHEN attempt_count >= max_attempts THEN NULL
+        ELSE DATEADD(SECOND, ?, SYSUTCDATETIME())
+    END,
     claimed_by = NULL,
     claimed_at = NULL,
     claim_expires_at = NULL,
     last_error_code = ?,
     last_error_detail = ?,
+    completed_at = CASE WHEN attempt_count >= max_attempts THEN SYSUTCDATETIME() ELSE completed_at END,
     updated_at = SYSUTCDATETIME()
 OUTPUT
     INSERTED.product_work_item_id,
@@ -241,14 +244,13 @@ OUTPUT
     INSERTED.next_attempt_at,
     INSERTED.claimed_by,
     INSERTED.claim_expires_at
-WHERE product_work_item_id = ?
-  AND attempt_count < max_attempts;
+WHERE product_work_item_id = ?;
 """,
                 int(delay_seconds), error_code, error_detail, int(item_id),
             )
             row = self._decode_item(self._row_dict(cur, cur.fetchone()))
             if row is None:
-                raise ValueError("retry limit reached or item not found")
+                raise LookupError(f"product work item not found: {item_id}")
             conn.commit()
             return row
         except Exception:
