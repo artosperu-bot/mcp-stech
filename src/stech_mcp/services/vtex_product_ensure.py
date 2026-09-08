@@ -171,6 +171,45 @@ class VtexProductEnsureService:
             )
         return sku
 
+    def _create_sku_for_product(
+        self,
+        partnumber: str,
+        master: dict[str, Any],
+        product_id: int,
+        *,
+        product_created: bool,
+    ) -> dict[str, Any]:
+        sku_ref = f"{partnumber}-S"
+        try:
+            created_sku = self.client.create_sku(self._build_sku_payload(partnumber, master, product_id))
+        except Exception:
+            if product_created:
+                return {
+                    "status": "PARTIAL_CREATED",
+                    "product_created": True,
+                    "sku_created": False,
+                    "product_id": product_id,
+                    "product_ref_id": partnumber,
+                    "sku_ref_id": sku_ref,
+                    "read_back_verified": False,
+                    "blocking_reasons": ["VTEX_SKU_CREATE_FAILED"],
+                }
+            raise
+        sku_id = _remote_id(created_sku, "Id", "id", "SkuId")
+        if sku_id is None:
+            raise RuntimeError("VTEX SKU create did not return a valid id")
+        self._verify_sku(sku_id, sku_ref, product_id)
+        return {
+            "status": "CREATED",
+            "product_created": product_created,
+            "sku_created": True,
+            "product_id": product_id,
+            "sku_id": sku_id,
+            "product_ref_id": partnumber,
+            "sku_ref_id": sku_ref,
+            "read_back_verified": True,
+        }
+
     def ensure(
         self,
         partnumber: str,
@@ -178,13 +217,44 @@ class VtexProductEnsureService:
         *,
         category_id: int,
         brand_id: int,
+        known_product_id: int | None = None,
     ) -> dict[str, Any]:
         normalized = normalize_partnumber(partnumber)
         if not normalized:
             raise ValueError("partnumber is required")
         sku_ref = f"{normalized}-S"
-        seller_product = self._lookup_seller_product(normalized)
 
+        persisted_product_id = _positive_int(known_product_id)
+        if persisted_product_id is not None:
+            self._verify_product(persisted_product_id, normalized)
+            if hasattr(self.client, "resolve_sku_id"):
+                try:
+                    existing_sku_id = self.client.resolve_sku_id(sku_ref)
+                except Exception as exc:
+                    if not self._not_found(exc):
+                        raise
+                else:
+                    parsed_sku_id = _positive_int(existing_sku_id)
+                    if parsed_sku_id is not None:
+                        self._verify_sku(parsed_sku_id, sku_ref, persisted_product_id)
+                        return {
+                            "status": "EXISTS",
+                            "product_created": False,
+                            "sku_created": False,
+                            "product_id": persisted_product_id,
+                            "sku_id": parsed_sku_id,
+                            "product_ref_id": normalized,
+                            "sku_ref_id": sku_ref,
+                            "read_back_verified": True,
+                        }
+            return self._create_sku_for_product(
+                normalized,
+                master,
+                persisted_product_id,
+                product_created=False,
+            )
+
+        seller_product = self._lookup_seller_product(normalized)
         if seller_product is not None:
             external_id = str(seller_product.get("externalId") or "").strip().upper()
             if external_id and external_id != normalized:
@@ -215,22 +285,7 @@ class VtexProductEnsureService:
                     "sku_ref_id": sku_ref,
                     "read_back_verified": True,
                 }
-
-            sku_created = self.client.create_sku(self._build_sku_payload(normalized, master, product_id))
-            sku_id = _remote_id(sku_created, "Id", "id", "SkuId")
-            if sku_id is None:
-                raise RuntimeError("VTEX SKU create did not return a valid id")
-            self._verify_sku(sku_id, sku_ref, product_id)
-            return {
-                "status": "CREATED",
-                "product_created": False,
-                "sku_created": True,
-                "product_id": product_id,
-                "sku_id": sku_id,
-                "product_ref_id": normalized,
-                "sku_ref_id": sku_ref,
-                "read_back_verified": True,
-            }
+            return self._create_sku_for_product(normalized, master, product_id, product_created=False)
 
         parsed_category = _positive_int(category_id)
         parsed_brand = _positive_int(brand_id)
@@ -255,20 +310,4 @@ class VtexProductEnsureService:
         if product_id is None:
             raise RuntimeError("VTEX Product create did not return a valid id")
         self._verify_product(product_id, normalized)
-
-        created_sku = self.client.create_sku(self._build_sku_payload(normalized, master, product_id))
-        sku_id = _remote_id(created_sku, "Id", "id", "SkuId")
-        if sku_id is None:
-            raise RuntimeError("VTEX SKU create did not return a valid id")
-        self._verify_sku(sku_id, sku_ref, product_id)
-
-        return {
-            "status": "CREATED",
-            "product_created": True,
-            "sku_created": True,
-            "product_id": product_id,
-            "sku_id": sku_id,
-            "product_ref_id": normalized,
-            "sku_ref_id": sku_ref,
-            "read_back_verified": True,
-        }
+        return self._create_sku_for_product(normalized, master, product_id, product_created=True)
