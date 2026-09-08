@@ -140,6 +140,78 @@ class VtexImageClient:
             payload=payload,
         )
 
+    def create_product(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise ValueError("payload must be a dict")
+        path = "/api/catalog/pvt/product"
+        result = self._request(
+            operation="create_product",
+            method="POST",
+            path=path,
+            payload=payload,
+        )
+        if not isinstance(result, dict):
+            raise VtexImageApiError(
+                operation="create_product",
+                status=200,
+                body=f"respuesta inesperada: {result!r}",
+                url=f"{self.base_url}{path}",
+            )
+        return result
+
+    def get_product(self, product_id: int) -> dict[str, Any]:
+        parsed = int(product_id)
+        path = f"/api/catalog/pvt/product/{parsed}"
+        result = self._request(
+            operation="get_product",
+            method="GET",
+            path=path,
+        )
+        if not isinstance(result, dict):
+            raise VtexImageApiError(
+                operation="get_product",
+                status=200,
+                body=f"respuesta inesperada: {result!r}",
+                url=f"{self.base_url}{path}",
+            )
+        return result
+
+    def create_sku(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise ValueError("payload must be a dict")
+        path = "/api/catalog/pvt/stockkeepingunit"
+        result = self._request(
+            operation="create_sku",
+            method="POST",
+            path=path,
+            payload=payload,
+        )
+        if not isinstance(result, dict):
+            raise VtexImageApiError(
+                operation="create_sku",
+                status=200,
+                body=f"respuesta inesperada: {result!r}",
+                url=f"{self.base_url}{path}",
+            )
+        return result
+
+    def get_sku(self, sku_id: int) -> dict[str, Any]:
+        parsed = int(sku_id)
+        path = f"/api/catalog/pvt/stockkeepingunit/{parsed}"
+        result = self._request(
+            operation="get_sku",
+            method="GET",
+            path=path,
+        )
+        if not isinstance(result, dict):
+            raise VtexImageApiError(
+                operation="get_sku",
+                status=200,
+                body=f"respuesta inesperada: {result!r}",
+                url=f"{self.base_url}{path}",
+            )
+        return result
+
     def resolve_sku_id(self, ref_id: str) -> int:
         ref = str(ref_id or "").strip()
         if not ref:
@@ -158,14 +230,14 @@ class VtexImageClient:
             raise VtexImageApiError(
                 operation="resolve_sku_id",
                 status=200,
-                body=f"respuesta sin SKU ID vÃ¡lido: {result!r}",
+                body=f"respuesta sin SKU ID válido: {result!r}",
                 url=f"{self.base_url}/api/catalog_system/pvt/sku/stockkeepingunitidbyrefid/{quote(ref, safe='')}",
             ) from exc
         if parsed <= 0:
             raise VtexImageApiError(
                 operation="resolve_sku_id",
                 status=200,
-                body=f"SKU ID invÃ¡lido: {parsed}",
+                body=f"SKU ID inválido: {parsed}",
                 url=f"{self.base_url}/api/catalog_system/pvt/sku/stockkeepingunitidbyrefid/{quote(ref, safe='')}",
             )
         return parsed
@@ -342,7 +414,7 @@ class VtexImageClient:
             raise VtexImageApiError(
                 operation="upload_catalog_image",
                 status=200,
-                body=f"respuesta sin asset vÃ¡lido: {asset!r}",
+                body=f"respuesta sin asset válido: {asset!r}",
                 url=url,
             )
         return {**asset, "id": asset_id, "fullUrl": full_url}
