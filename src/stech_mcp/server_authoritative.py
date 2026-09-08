@@ -4,16 +4,20 @@ from __future__ import annotations
 
 The existing server module remains the single registry for MCP tools and shared
 repositories. This module swaps only the VTEX image sync service used by those
-registered tools, the batch service, and Product Loader. Product Work V2 tools
-are registered additively after that swap; no existing tool is replaced.
+registered tools, the batch service, and Product Loader. Product Work V2 and
+technical schema tools are registered additively after that swap; no existing
+tool is replaced.
 """
 
 import os
 
 from stech_mcp import server as _server
+from stech_mcp.db.product_schema_repository import ProductSchemaRepository
 from stech_mcp.db.product_work_control_repository import ProductWorkControlRepository
+from stech_mcp.services.product_technical_status import ProductTechnicalStatusService
 from stech_mcp.services.product_work_service import ProductWorkService
 from stech_mcp.services.vtex_image_sync_authoritative import VtexImageSyncService
+from stech_mcp.tools.product_schema import register_product_schema_tools
 from stech_mcp.tools.product_work import register_product_work_tools
 
 
@@ -41,6 +45,21 @@ product_work_service = ProductWorkService(
 product_work_tools = register_product_work_tools(
     _server.mcp,
     product_work_service,
+    namespace=_server,
+)
+
+# Canonical technical schemas are also additive. They reuse the existing V8
+# product repository and approved enrichment repository without changing them.
+product_schema_repository = ProductSchemaRepository(_server.mcp_connection_factory)
+product_technical_status_service = ProductTechnicalStatusService(
+    product_repository=_server.product_repository,
+    enrichment_repository=_server.enrichment_repository,
+    schema_repository=product_schema_repository,
+)
+product_schema_tools = register_product_schema_tools(
+    _server.mcp,
+    schema_repository=product_schema_repository,
+    technical_status_service=product_technical_status_service,
     namespace=_server,
 )
 
