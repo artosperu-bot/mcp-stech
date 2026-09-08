@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-from copy import deepcopy
 from pathlib import Path
 
-from stech_mcp.services.vtex_image_client import VtexImageApiError
 from stech_mcp.services.vtex_image_sync import VtexImageSyncService
 
 
@@ -41,140 +39,55 @@ class FakeLocalImageService:
 
 class FakeSigner:
     def sign(self, *, product_image_id: int, partnumber: str):
-        raise AssertionError("CatalogV2 flow must not use public signed URLs")
-
-
-def _seller_product(*, with_legacy=False):
-    images = []
-    sku_images = []
-    if with_legacy:
-        images = [
-            {
-                "id": "legacy.jpg",
-                "url": "https://ststore227.vtexassets.com/assets/vtex.catalog-images/products/legacy.jpg",
-                "alt": "Legacy",
-            }
-        ]
-        sku_images = ["legacy.jpg"]
-    return {
-        "id": "251",
-        "externalId": "82YU00XYLM",
-        "status": "active",
-        "name": "Laptop Lenovo V15 G4 AMN Ryzen 5 7520U",
-        "description": "Descripcion actual que debe preservarse",
-        "brandId": "27",
-        "brandName": "LENOVO",
-        "categoryIds": ["519"],
-        "categoryNames": ["/coolboxpe/Computo/Laptops/"],
-        "specs": [],
-        "attributes": [
-            {"name": "Modelo", "value": "V15 G4 AMN", "groupName": "Attribute List"},
-            {"name": "Memoria RAM", "value": "16 GB", "groupName": "Attribute List"},
-        ],
-        "slug": "laptop-lenovo-v15-g4-amn-82yu00xylm",
-        "images": images,
-        "skus": [
-            {
-                "id": "251",
-                "externalId": "82YU00XYLM-S",
-                "ean": "0197528523880",
-                "manufacturerCode": "82YU00XYLM",
-                "isActive": False,
-                "name": "Laptop Lenovo V15 G4 AMN Ryzen 5 7520U",
-                "weight": 2450,
-                "dimensions": {"width": 31.4, "height": 7, "length": 49.2},
-                "specs": [],
-                "images": sku_images,
-            }
-        ],
-        "origin": "ststore227",
-        "createdAt": "2026-09-01T00:00:00Z",
-        "updatedAt": "2026-09-05T00:00:00Z",
-    }
+        return f"https://mcp.artos.pe/vtex-images/signed-{partnumber}-{product_image_id}"
 
 
 class FakeVtexClient:
-    def __init__(self, product=None):
-        self.account_name = "ststore227"
-        self.environment = "vtexcommercestable.com.br"
-        self.product = deepcopy(product or _seller_product())
-        self.external_product = None
-        self.product_reads = []
-        self.product_id_reads = []
+    def __init__(self):
         self.resolve_calls = []
-        self.sku_context_reads = []
-        self.external_read_error = None
-        self.token_calls = 0
-        self.upload_calls = []
+        self.list_calls = []
+        self.create_calls = []
         self.update_calls = []
-        self.upload_error_at = None
-        self.conflict_names = set()
-        self.classic_pvt_calls = []
+        self.files = []
+        self._next_id = 700
 
     def resolve_sku_id(self, ref_id: str):
         self.resolve_calls.append(ref_id)
         return 251
 
-    def get_sku_context(self, sku_id: int):
-        self.sku_context_reads.append(int(sku_id))
-        return {
-            "Id": int(sku_id),
-            "ProductId": 251,
-            "ProductRefId": "82YU00XYLM",
-            "ManufacturerCode": "82YU00XYLM",
-        }
-
-    def get_seller_product_by_external_id(self, external_id: str):
-        self.product_reads.append(external_id)
-        if self.external_read_error is not None:
-            raise self.external_read_error
-        return deepcopy(self.external_product if self.external_product is not None else self.product)
-
-    def get_seller_product(self, product_id: str):
-        self.product_id_reads.append(str(product_id))
-        return deepcopy(self.product)
-
-    def get_local_token(self):
-        self.token_calls += 1
-        return "local-token"
-
-    def upload_catalog_image(self, file_path, *, token: str):
-        file_name = Path(file_path).name
-        self.upload_calls.append((str(file_path), token))
-        if self.upload_error_at == file_name:
-            raise VtexImageApiError(
-                operation="upload_catalog_image",
-                status=500,
-                body="upload failed",
-                url=f"https://app.io.vtex.com/images/save/{file_name}",
-            )
-        return {
-            "id": file_name,
-            "fullUrl": (
-                "https://ststore227.vtexassets.com/assets/vtex.catalog-images/products/"
-                f"{file_name.replace('.jpg', '')}___hash.jpg"
-            ),
-            "conflict": file_name in self.conflict_names,
-        }
-
-    def update_seller_product(self, product_id: str, payload: dict):
-        self.update_calls.append((str(product_id), deepcopy(payload)))
-        updated = deepcopy(payload)
-        updated["brandName"] = self.product.get("brandName")
-        updated["categoryNames"] = deepcopy(self.product.get("categoryNames"))
-        updated["createdAt"] = self.product.get("createdAt")
-        updated["updatedAt"] = "2026-09-06T00:00:00Z"
-        self.product = updated
-        return {}
-
-    # Regression guard: CatalogV2 sync must not touch broken Classic Catalog PVT.
     def list_sku_files(self, sku_id: int):
-        self.classic_pvt_calls.append(("GET", sku_id))
-        raise AssertionError("Classic Catalog PVT must not be called for CatalogV2 images")
+        self.list_calls.append(sku_id)
+        return [dict(row) for row in self.files]
 
     def create_sku_file(self, sku_id: int, payload: dict):
-        self.classic_pvt_calls.append(("POST", sku_id))
-        raise AssertionError("Classic Catalog PVT must not be called for CatalogV2 images")
+        self.create_calls.append((sku_id, dict(payload)))
+        created = {
+            "Id": self._next_id,
+            "SkuId": sku_id,
+            "ArchiveId": self._next_id + 1000,
+            "IsMain": bool(payload["IsMain"]),
+            "Label": payload["Label"],
+            "Name": payload["Name"],
+            "Url": payload["Url"],
+        }
+        self._next_id += 1
+        self.files.append(created)
+        return dict(created)
+
+    def update_sku_file(self, sku_id: int, sku_file_id: int, payload: dict):
+        self.update_calls.append((sku_id, sku_file_id, dict(payload)))
+        for index, current in enumerate(self.files):
+            if int(current.get("Id") or 0) != int(sku_file_id):
+                continue
+            updated = {
+                **current,
+                **payload,
+                "Id": int(sku_file_id),
+                "SkuId": int(sku_id),
+            }
+            self.files[index] = updated
+            return dict(updated)
+        raise RuntimeError(f"file_not_found:{sku_file_id}")
 
 
 class FakePublicationRepository:
@@ -187,21 +100,20 @@ class FakePublicationRepository:
             for row in self.rows
             if row["partnumber"] == partnumber
             and row["account_code"] == account_code
-            and int(row["remote_sku_id"]) == int(remote_sku_id)
+            and row["remote_sku_id"] == remote_sku_id
         ]
 
     def upsert_publication(self, **row):
-        key = (row["account_code"], int(row["remote_sku_id"]), int(row["product_image_id"]))
-        self.rows = [
-            existing
-            for existing in self.rows
-            if (
-                existing["account_code"],
-                int(existing["remote_sku_id"]),
-                int(existing["product_image_id"]),
+        key = (row["account_code"], row["remote_sku_id"], row["product_image_id"])
+        for current in self.rows:
+            current_key = (
+                current["account_code"],
+                current["remote_sku_id"],
+                current["product_image_id"],
             )
-            != key
-        ]
+            if current_key == key:
+                current.update(row)
+                return dict(current)
         stored = {"product_image_publication_id": len(self.rows) + 1, **row}
         self.rows.append(stored)
         return dict(stored)
@@ -234,9 +146,9 @@ def _images():
     ]
 
 
-def _service(vtex, publications=None, audit=None, local=None):
+def _service(local, vtex, publications=None, audit=None):
     return VtexImageSyncService(
-        local_service=local or FakeLocalImageService(_images()),
+        local_service=local,
         vtex_client=vtex,
         publication_repository=publications or FakePublicationRepository(),
         signer=FakeSigner(),
@@ -244,246 +156,190 @@ def _service(vtex, publications=None, audit=None, local=None):
     )
 
 
-def _target_sku(payload):
-    return next(row for row in payload["skus"] if str(row["id"]) == "251")
-
-
-def test_sync_catalog_v2_uploads_assets_updates_only_images_and_puts_01_first():
-    original = _seller_product()
-    vtex = FakeVtexClient(original)
+def test_sync_uploads_01_to_04_in_order_and_marks_01_as_main():
+    local = FakeLocalImageService(_images())
+    vtex = FakeVtexClient()
     publications = FakePublicationRepository()
     audit = FakeAuditRepository()
-    service = _service(vtex, publications=publications, audit=audit)
-
-    result = service.sync("82YU00XYLM", account_code="VTEX_STECH")
+    result = _service(local, vtex, publications, audit).sync("82YU00XYLM", account_code="VTEX_STECH")
 
     assert result["state"] == "SYNCED"
-    assert result["transport"] == "catalog_seller_portal"
     assert result["remote_sku_id"] == 251
     assert result["uploaded_count"] == 4
+    assert result["replaced_count"] == 0
     assert result["verified_count"] == 4
-    assert result["product_update_performed"] is True
-    assert vtex.token_calls == 1
-    assert [Path(path).name for path, _ in vtex.upload_calls] == [
+    assert vtex.resolve_calls == ["82YU00XYLM-S"]
+    assert [payload["Name"] for _, payload in vtex.create_calls] == [
         "82YU00XYLM_01.jpg",
         "82YU00XYLM_02.jpg",
         "82YU00XYLM_03.jpg",
         "82YU00XYLM_04.jpg",
     ]
-    assert len(vtex.update_calls) == 1
-    _, payload = vtex.update_calls[0]
-    assert [row["id"] for row in payload["images"]] == [
-        "82YU00XYLM_01.jpg",
-        "82YU00XYLM_02.jpg",
-        "82YU00XYLM_03.jpg",
-        "82YU00XYLM_04.jpg",
-    ]
-    assert _target_sku(payload)["images"] == [
-        "82YU00XYLM_01.jpg",
-        "82YU00XYLM_02.jpg",
-        "82YU00XYLM_03.jpg",
-        "82YU00XYLM_04.jpg",
-    ]
-
-    # Guardrails: every non-image field is copied, not mutated.
-    assert payload["status"] == original["status"]
-    assert payload["description"] == original["description"]
-    assert payload["brandId"] == original["brandId"]
-    assert payload["categoryIds"] == original["categoryIds"]
-    assert payload["attributes"] == [
-        {"name": row["name"], "value": row["value"]}
-        for row in original["attributes"]
-    ]
-    assert payload["slug"] == original["slug"]
-    assert _target_sku(payload)["isActive"] is original["skus"][0]["isActive"]
-    assert _target_sku(payload)["ean"] == original["skus"][0]["ean"]
-    assert _target_sku(payload)["weight"] == original["skus"][0]["weight"]
-    assert _target_sku(payload)["dimensions"] == original["skus"][0]["dimensions"]
-    assert vtex.classic_pvt_calls == []
+    assert [payload["IsMain"] for _, payload in vtex.create_calls] == [True, False, False, False]
+    assert not vtex.update_calls
     assert all(row["status"] == "VERIFIED" for row in publications.rows)
     assert audit.events[-1]["event_type"] == "VTEX_IMAGES_SYNC"
 
 
-def test_sync_preserves_preexisting_images_and_makes_01_first_without_deleting_anything():
-    vtex = FakeVtexClient(_seller_product(with_legacy=True))
-    service = _service(vtex)
-
-    result = service.sync("82YU00XYLM")
-
-    assert result["state"] == "SYNCED"
-    _, payload = vtex.update_calls[0]
-    assert [row["id"] for row in payload["images"]] == [
-        "82YU00XYLM_01.jpg",
-        "82YU00XYLM_02.jpg",
-        "82YU00XYLM_03.jpg",
-        "82YU00XYLM_04.jpg",
-        "legacy.jpg",
-    ]
-    assert _target_sku(payload)["images"] == [
-        "82YU00XYLM_01.jpg",
-        "82YU00XYLM_02.jpg",
-        "82YU00XYLM_03.jpg",
-        "82YU00XYLM_04.jpg",
-        "legacy.jpg",
-    ]
-
-
-def test_second_sync_is_idempotent_and_does_not_upload_or_put_again():
+def test_second_sync_is_idempotent_and_does_not_write_again():
+    local = FakeLocalImageService(_images())
     vtex = FakeVtexClient()
-    service = _service(vtex)
+    publications = FakePublicationRepository()
+    service = _service(local, vtex, publications)
 
-    first = service.sync("82YU00XYLM")
-    upload_count = len(vtex.upload_calls)
-    put_count = len(vtex.update_calls)
-    second = service.sync("82YU00XYLM")
+    first = service.sync("82YU00XYLM", account_code="VTEX_STECH")
+    second = service.sync("82YU00XYLM", account_code="VTEX_STECH")
 
-    assert first["state"] == "SYNCED"
-    assert upload_count == 4
-    assert put_count == 1
+    assert first["uploaded_count"] == 4
+    assert second["uploaded_count"] == 0
+    assert second["replaced_count"] == 0
+    assert second["skipped_count"] == 4
+    assert len(vtex.create_calls) == 4
+    assert not vtex.update_calls
+    assert len(vtex.list_calls) >= 4
+
+
+def test_sync_after_adding_images_uploads_only_the_new_positions():
+    local = FakeLocalImageService(_images())
+    vtex = FakeVtexClient()
+    publications = FakePublicationRepository()
+    service = _service(local, vtex, publications)
+
+    first = service.sync("82YU00XYLM", account_code="VTEX_STECH")
+    assert first["uploaded_count"] == 4
+
+    local.images.extend(
+        {
+            "product_image_id": position,
+            "partnumber": "82YU00XYLM",
+            "storage_path": str(Path(f"82YU00XYLM_{position:02d}.jpg")),
+            "position": position,
+            "is_main": False,
+            "is_approved": True,
+            "sha256_hash": f"{position:064x}",
+            "format": "JPEG",
+        }
+        for position in range(5, 9)
+    )
+    before_second = len(vtex.create_calls)
+    second = service.sync("82YU00XYLM", account_code="VTEX_STECH")
+
+    second_payloads = [payload for _, payload in vtex.create_calls[before_second:]]
+    assert second["state"] == "SYNCED"
+    assert second["uploaded_count"] == 4
+    assert second["replaced_count"] == 0
+    assert second["skipped_count"] == 4
+    assert second["verified_count"] == 8
+    assert [payload["Name"] for payload in second_payloads] == [
+        "82YU00XYLM_05.jpg",
+        "82YU00XYLM_06.jpg",
+        "82YU00XYLM_07.jpg",
+        "82YU00XYLM_08.jpg",
+    ]
+    assert all(payload["IsMain"] is False for payload in second_payloads)
+
+
+def test_sync_replaces_only_changed_image_at_same_position():
+    local = FakeLocalImageService(_images())
+    vtex = FakeVtexClient()
+    publications = FakePublicationRepository()
+    service = _service(local, vtex, publications)
+
+    first = service.sync("82YU00XYLM", account_code="VTEX_STECH")
+    assert first["uploaded_count"] == 4
+    old_position_3 = next(row for row in publications.rows if row["position"] == 3)
+    remote_file_id = int(old_position_3["remote_file_id"])
+
+    local.images = [
+        ({
+            **row,
+            "product_image_id": 103,
+            "sha256_hash": "f" * 64,
+            "storage_path": str(Path("82YU00XYLM_03.jpg")),
+        } if row["position"] == 3 else row)
+        for row in local.images
+    ]
+    before_create = len(vtex.create_calls)
+    second = service.sync("82YU00XYLM", account_code="VTEX_STECH")
+
     assert second["state"] == "SYNCED"
     assert second["uploaded_count"] == 0
-    assert second["product_update_performed"] is False
-    assert len(vtex.upload_calls) == 4
+    assert second["replaced_count"] == 1
+    assert second["skipped_count"] == 3
+    assert second["verified_count"] == 4
+    assert len(vtex.create_calls) == before_create
     assert len(vtex.update_calls) == 1
+    sku_id, updated_file_id, payload = vtex.update_calls[0]
+    assert sku_id == 251
+    assert updated_file_id == remote_file_id
+    assert payload["Name"] == "82YU00XYLM_03.jpg"
+    assert payload["IsMain"] is False
+    assert payload["Url"].endswith("-103")
+    current = next(row for row in publications.rows if row["product_image_id"] == 103)
+    assert current["status"] == "VERIFIED"
+    assert int(current["remote_file_id"]) == remote_file_id
 
 
-def test_manual_01_asset_conflict_is_reused_and_other_assets_are_uploaded():
+def test_existing_remote_unpadded_name_is_adopted_by_position_without_duplicate():
+    local = FakeLocalImageService([_images()[0]])
     vtex = FakeVtexClient()
-    vtex.conflict_names.add("82YU00XYLM_01.jpg")
-    service = _service(vtex)
+    vtex.files.append(
+        {
+            "Id": 901,
+            "SkuId": 251,
+            "ArchiveId": 1901,
+            "IsMain": True,
+            "Label": "Main",
+            "Name": "82YU00XYLM_1.jpg",
+            "Url": "https://vtex.example/old-main.jpg",
+        }
+    )
+    publications = FakePublicationRepository()
 
-    result = service.sync("82YU00XYLM")
+    result = _service(local, vtex, publications).sync("82YU00XYLM", account_code="VTEX_STECH")
 
     assert result["state"] == "SYNCED"
-    assert result["uploaded_count"] == 3
-    assert result["asset_reused_count"] == 1
-    assert result["verified_count"] == 4
-    _, payload = vtex.update_calls[0]
-    assert _target_sku(payload)["images"][0] == "82YU00XYLM_01.jpg"
-
-
-def test_status_uses_seller_portal_and_never_calls_broken_classic_catalog_pvt():
-    vtex = FakeVtexClient(_seller_product(with_legacy=True))
-    status = _service(vtex).status("82YU00XYLM")
-
-    assert status["state"] == "READY"
-    assert status["transport"] == "catalog_seller_portal"
-    assert status["remote_sku_id"] == 251
-    assert status["remote_image_count"] == 1
-    assert status["remote_main_file"]["name"] == "legacy.jpg"
-    assert vtex.classic_pvt_calls == []
-
-
-def test_status_reports_synced_only_when_all_local_images_exist_and_01_is_first():
-    product = _seller_product()
-    product["images"] = [
-        {
-            "id": f"82YU00XYLM_{position:02d}.jpg",
-            "url": f"https://ststore227.vtexassets.com/{position}.jpg",
-        }
-        for position in range(1, 5)
-    ]
-    product["skus"][0]["images"] = [f"82YU00XYLM_{position:02d}.jpg" for position in range(1, 5)]
-    vtex = FakeVtexClient(product)
-
-    status = _service(vtex).status("82YU00XYLM")
-
-    assert status["state"] == "SYNCED"
-    assert status["remote_main_file"]["name"] == "82YU00XYLM_01.jpg"
+    assert result["uploaded_count"] == 0
+    assert result["replaced_count"] == 0
+    assert result["skipped_count"] == 1
+    assert not vtex.create_calls
+    assert not vtex.update_calls
+    assert publications.rows[0]["remote_file_id"] == 901
+    assert publications.rows[0]["status"] == "VERIFIED"
 
 
 def test_missing_01_stops_before_any_vtex_write():
     images = [row for row in _images() if row["position"] != 1]
     local = FakeLocalImageService(images, state="REVIEW", reason="main_image_01_missing")
     vtex = FakeVtexClient()
-    service = _service(vtex, local=local)
-
-    result = service.sync("82YU00XYLM")
+    result = _service(local, vtex).sync("82YU00XYLM", account_code="VTEX_STECH")
 
     assert result["state"] == "REVIEW"
     assert result["reason"] == "main_image_01_missing"
-    assert vtex.product_reads == []
-    assert vtex.upload_calls == []
+    assert vtex.resolve_calls == []
+    assert vtex.create_calls == []
     assert vtex.update_calls == []
 
 
-def test_sync_stops_before_product_put_when_catalog_image_upload_fails():
+def test_status_is_not_synced_until_every_local_image_has_verified_publication():
+    local = FakeLocalImageService(_images())
     vtex = FakeVtexClient()
-    vtex.upload_error_at = "82YU00XYLM_02.jpg"
-    audit = FakeAuditRepository()
-    service = _service(vtex, audit=audit)
-
-    result = service.sync("82YU00XYLM")
-
-    assert result["state"] == "ERROR"
-    assert result["reason"] == "vtex_catalog_images_unavailable"
-    assert result["write_blocked"] is True
-    assert [Path(path).name for path, _ in vtex.upload_calls] == [
-        "82YU00XYLM_01.jpg",
-        "82YU00XYLM_02.jpg",
-    ]
-    assert vtex.update_calls == []
-    assert result["vtex_error"]["stage"] == "upload_catalog_image"
-    assert audit.events[-1]["detail"]["reason"] == "vtex_catalog_images_unavailable"
-
-
-def test_sync_blocks_origin_mismatch_before_asset_or_product_write():
-    product = _seller_product()
-    product["origin"] = "marketplace"
-    vtex = FakeVtexClient(product)
-    service = _service(vtex)
-
-    result = service.sync("82YU00XYLM")
-
-    assert result["state"] == "BLOCKED"
-    assert result["reason"] == "seller_portal_origin_mismatch"
-    assert vtex.upload_calls == []
-    assert vtex.update_calls == []
-
-def test_status_uses_catalog_system_product_id_then_full_seller_product():
-    vtex = FakeVtexClient(_seller_product())
-    vtex.external_read_error = VtexImageApiError(
-        operation="get_seller_product_by_external_id",
-        status=500,
-        body="external-id route failed",
-        url="https://ststore227.vtexcommercestable.com.br/api/catalog-seller-portal/products/external-id=82YU00XYLM",
+    publications = FakePublicationRepository()
+    publications.rows.append(
+        {
+            "product_image_publication_id": 1,
+            "product_image_id": 1,
+            "partnumber": "82YU00XYLM",
+            "channel": "VTEX",
+            "account_code": "VTEX_STECH",
+            "remote_sku_id": 251,
+            "status": "VERIFIED",
+            "position": 1,
+            "is_main": True,
+        }
     )
-
-    status = _service(vtex).status("82YU00XYLM")
+    status = _service(local, vtex, publications).status("82YU00XYLM", account_code="VTEX_STECH")
 
     assert status["state"] == "READY"
-    assert status["product_id"] == "251"
-    assert vtex.resolve_calls == ["82YU00XYLM-S"]
-    assert vtex.sku_context_reads == [251]
-    assert vtex.product_id_reads == ["251"]
-    assert vtex.product_reads == []
-
-
-def test_sync_reads_full_product_by_product_id_when_external_shape_has_no_slug():
-    vtex = FakeVtexClient(_seller_product())
-    vtex.external_product = _seller_product()
-    vtex.external_product.pop("slug", None)
-
-    result = _service(vtex).sync("82YU00XYLM")
-
-    assert result["state"] == "SYNCED"
-    assert result["product_update_performed"] is True
-    assert vtex.product_reads == []
-    assert vtex.product_id_reads[0] == "251"
-    _, payload = vtex.update_calls[0]
-    assert payload["slug"] == "laptop-lenovo-v15-g4-amn-82yu00xylm"
-
-
-def test_sync_blocks_without_put_when_numeric_seller_product_still_has_no_slug():
-    product = _seller_product()
-    product.pop("slug")
-    vtex = FakeVtexClient(product)
-
-    result = _service(vtex).sync("82YU00XYLM")
-
-    assert result["state"] == "BLOCKED"
-    assert result["reason"] == "seller_portal_payload_invalid"
-    assert result["write_blocked"] is True
-    assert result["product_update_performed"] is False
-    assert "slug" in result["errors"][0]["error"]
-    assert vtex.update_calls == []
+    assert status["local_image_count"] == 4
+    assert status["verified_publication_count"] == 1

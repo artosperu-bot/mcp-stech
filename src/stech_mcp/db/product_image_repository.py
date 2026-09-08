@@ -54,11 +54,12 @@ class ProductImageRepository:
                 """
                 SELECT TOP (1) product_image_id
                 FROM dbo.product_image WITH (UPDLOCK, HOLDLOCK)
-                WHERE partnumber = ? AND sha256_hash = ? AND variant_type = ?
+                WHERE partnumber = ? AND sha256_hash = ? AND variant_type = ? AND position = ?
                 """,
                 normalized,
                 sha256_hash,
                 variant_type,
+                position,
             )
             existing = cursor.fetchone()
             if existing is None:
@@ -326,7 +327,7 @@ class ProductImageRepository:
             connection.commit()
             row = self._get_with_cursor(cursor, image_id)
             if row is None:
-                raise RuntimeError("created image variant could not be read back")
+                raise RuntimeError("created product image variant could not be read back")
             return row
         except Exception:
             if hasattr(connection, "rollback"):
