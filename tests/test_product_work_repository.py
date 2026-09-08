@@ -50,11 +50,11 @@ class FakeConnection:
         self.closed = True
 
 
-def test_claim_next_uses_atomic_sql_locks_priority_and_lease():
+def test_claim_next_uses_atomic_sql_locks_priority_lease_and_starts_attempt():
     row = (
         101, 41, "ENRICH_TECHNICAL", "PN1", "LAPTOP", None,
         "a" * 64, '{"partnumber":"PN1"}', "QUEUED", None,
-        0, 100, 0, 3, None, "worker-a", None,
+        0, 100, 1, 3, None, "worker-a", None,
     )
     cursor = FakeCursor(fetchone_values=[row])
     conn = FakeConnection(cursor)
@@ -66,12 +66,14 @@ def test_claim_next_uses_atomic_sql_locks_priority_and_lease():
     assert item["item_id"] == 101
     assert item["partnumber"] == "PN1"
     assert item["input"]["partnumber"] == "PN1"
+    assert item["attempt_count"] == 1
     sql = "\n".join(text.upper() for text, _ in cursor.executions)
     assert "UPDLOCK" in sql
     assert "READPAST" in sql
     assert "ROWLOCK" in sql
     assert "PRIORITY DESC" in sql
     assert "CLAIM_EXPIRES_AT" in sql
+    assert "ATTEMPT_COUNT = ATTEMPT_COUNT + 1" in sql
     assert "FAILED_RETRYABLE" in sql
     assert conn.committed is True
     assert conn.closed is True
