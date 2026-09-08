@@ -212,8 +212,6 @@ def _target_ids(product: dict) -> list[str]:
 def test_sync_repairs_current_nine_remote_images_to_exact_eight_local_positions():
     images = [_image(position) for position in range(1, 9)]
     managed = [_asset_id(position) for position in range(1, 9)]
-    # Reproduces the user's screenshot after the old additive merge:
-    # local 01..08 are present and an old fifth image was appended as a ninth item.
     product = _product([*managed, "legacy-position-05.jpg"])
     service, vtex, _ = _service(images, product, _verified_rows(images))
 
@@ -282,3 +280,23 @@ def test_sync_changed_binary_replaces_same_position_without_creating_an_extra_sl
     current_publication = next(row for row in repo.rows if int(row["product_image_id"]) == 33)
     assert current_publication["status"] == "VERIFIED"
     assert current_publication["position"] == 3
+
+
+def test_sync_adopts_matching_preexisting_positions_when_publication_history_is_empty():
+    images = [_image(position) for position in range(1, 5)]
+    existing = [_asset_id(position) for position in range(1, 5)]
+    product = _product(existing)
+    service, vtex, repo = _service(images, product, publications=[])
+
+    result = service.sync(PARTNUMBER, account_code="VTEX_STECH")
+
+    assert result["state"] == "SYNCED"
+    assert result["uploaded_count"] == 0
+    assert result["replaced_count"] == 0
+    assert result["skipped_count"] == 4
+    assert result["remote_before_count"] == 4
+    assert result["remote_after_count"] == 4
+    assert vtex.upload_calls == []
+    assert vtex.update_calls == []
+    assert _target_ids(vtex.product) == existing
+    assert len([row for row in repo.rows if row["status"] == "VERIFIED"]) == 4
