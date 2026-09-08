@@ -138,6 +138,30 @@ def test_sync_is_idempotent_for_same_binary_files(tmp_path):
     assert len(repo.rows) == 2
 
 
+def test_sync_allows_same_binary_at_different_positions(tmp_path):
+    partnumber = "82YU00XYLM"
+    folder = tmp_path / "LENOVO" / "COMPUTADORAS_NOTEBOOK" / partnumber
+    folder.mkdir(parents=True)
+    first = folder / f"{partnumber}_01.png"
+    sixth = folder / f"{partnumber}_06.png"
+    _write_png(first, 1)
+    sixth.write_bytes(first.read_bytes())
+    repo = FakeImageRepository()
+    service = LocalImageSyncService(root=tmp_path, repository=repo)
+
+    result = service.sync(partnumber)
+
+    assert result["state"] == "READY"
+    assert result["image_count"] == 2
+    assert result["errors"] == []
+    assert [row["position"] for row in result["images"]] == [1, 6]
+    assert [Path(row["storage_path"]).name for row in result["images"]] == [
+        f"{partnumber}_01.png",
+        f"{partnumber}_06.png",
+    ]
+    assert len(repo.rows) == 2
+
+
 def test_validate_uses_current_file_when_same_position_binary_changes(tmp_path):
     partnumber = "82YU00XYLM"
     folder = _write_product_images(tmp_path, partnumber, [1])
