@@ -1,49 +1,95 @@
-# Product Work Queue + Worker V2 — Implementation Plan
+# Product Work Queue + Worker V2 Implementation Plan
 
-> **Para Steve:** REQUIRED SUB-SKILL: ejecutar con `superpowers:subagent-driven-development` o `superpowers:executing-plans` y verificar cada tarea antes de continuar.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** crear una cola persistente genérica y un worker separado del proceso MCP para ejecutar trabajos largos de producto, empezando por `ENRICH_TECHNICAL`, con prioridad, leases, retries, reanudación e idempotencia.
+**Goal:** Create a generic persistent product-work queue and a separate Windows worker that can process long-running `ENRICH_TECHNICAL` jobs without keeping the MCP request or V8 screen open.
 
-**Architecture:** SQL Server es la autoridad del estado. STECH MCP crea/consulta/controla trabajos; un proceso `stech-enrichment-worker` reclama items mediante leases atómicos y ejecuta handlers por `work_type`. El flujo VTEX existente basado en `product_loader_job` queda intacto.
+**Architecture:** SQL Server is the single authority for jobs/items/events/attempts. STECH MCP only creates, reads, retries and cancels jobs; `stech-enrichment-worker` claims work atomically with leases and dispatches by `work_type`. The existing VTEX `product_loader_job` flow stays unchanged.
 
-**Tech Stack:** Python 3.12, SQL Server, pyodbc, FastMCP, pytest; wrapper de ejecución Windows separado del servidor MCP.
+**Tech Stack:** Python 3.12, FastMCP, SQL Server 2019, pyodbc, pytest, pywin32 on Windows.
+
+**Spec:** `docs/superpowers/specs/2026-09-08-product-enrichment-engine-v2-design.md`
+
+## Global Constraints
+
+- `ENRICH_TECHNICAL` MUST NOT write price or stock.
+- Product Work Queue is separate from existing `product_loader_job` / VTEX loader tables.
+- Queue state survives MCP/worker/PC restart.
+- Active equivalent work for the same `partnumber + work_type + context_hash` must not be duplicated.
+- Worker default concurrency is exactly `1` in V2; later scaling is configuration, not a redesign.
+- Worker is installed on PC020 as a Windows Service using `pywin32`; no daemon thread inside MCP is considered production execution.
+- Every state transition emits an event; every execution attempt has start/end/error data.
 
 ---
 
-## Task 1: Contrato SQL de cola genérica
+### Task 1: SQL queue contract
 
 **Files:**
 - Create: `sql/006_product_work_queue_v2.sql`
-- Create: `tests/test_product_work_queue_schema.py`
+- Test: `tests/test_product_work_queue_schema.py`
 
-**Step 1 — Escribir prueba que falle**
+**Interfaces:**
+- Consumes: SQL Server 2019.
+- Produces: `dbo.product_work_job`, `dbo.product_work_item`, `dbo.product_work_event`, `dbo.product_work_attempt`.
 
-Crear prueba de texto/contrato que exija las tablas `product_work_job`, `product_work_item`, `product_work_event`, `product_work_attempt`, sus estados, índices y campos de lease (`claimed_by`, `claimed_at`, `claim_expires_at`, `next_attempt_at`). También debe comprobar una protección contra duplicados activos por `partnumber + work_type + context_hash`.
+- [ ] **Step 1: Write the failing schema test**
 
-Run:
-```bash
-pytest tests/test_product_work_queue_schema.py -q
+```python
+from pathlib import Path
+
+SQL = Path("sql/006_product_work_queue_v2.sql")
+
+
+def test_product_work_schema_has_required_contract():
+    text = SQL.read_text(encoding="utf-8").upper()
+    for token in (
+        "PRODUCT_WORK_JOB", "PRODUCT_WORK_ITEM", "PRODUCT_WORK_EVENT",
+        "PRODUCT_WORK_ATTEMPT", "CONTEXT_HASH", "CLAIMED_BY",
+        "CLAIM_EXPIRES_AT", "NEXT_ATTEMPT_AT", "FAILED_RETRYABLE",
+        "ENRICH_TECHNICAL",
+    ):
+        assert token in text
 ```
-Expected: FAIL porque `sql/006_product_work_queue_v2.sql` no existe.
 
-**Step 2 — Implementar SQL mínimo**
+- [ ] **Step 2: Run the test and verify failure**
 
-Definir:
-- job states: `PENDING`, `RUNNING`, `WAITING_REVIEW`, `COMPLETED`, `PARTIAL`, `FAILED`, `CANCELLED`;
-- item states: `QUEUED`, `LOADING_SOURCE_DATA`, `ANALYZING_MISSING_FIELDS`, `RESEARCHING`, `READING_DOCUMENTS`, `VALIDATING`, `PROMOTING_FACTS`, `REBUILDING_PRODUCT_MASTER`, `COMPLETED`, `PARTIAL`, `REVIEW_REQUIRED`, `NO_DATA_FOUND`, `FAILED_RETRYABLE`, `FAILED`, `CANCELLED`;
-- `priority`, `attempt_count`, `max_attempts`, `next_attempt_at`;
-- lease fields;
-- `input_json`, `context_hash`, `last_error_*`;
-- índices de claim por estado/prioridad/next_attempt;
-- índice filtrado/estrategia equivalente para impedir duplicados activos.
+Run: `pytest tests/test_product_work_queue_schema.py -v`
 
-**Step 3 — Verificar**
-```bash
-pytest tests/test_product_work_queue_schema.py -q
+Expected: FAIL because `sql/006_product_work_queue_v2.sql` does not exist.
+
+- [ ] **Step 3: Implement the SQL schema**
+
+Create four tables with these minimum columns:
+
+```sql
+CREATE TABLE dbo.product_work_job (
+    product_work_job_id BIGINT IDENTITY(1,1) PRIMARY KEY,
+    work_type NVARCHAR(40) NOT NULL,
+    source_name NVARCHAR(260) NOT NULL,
+    actor_source NVARCHAR(80) NOT NULL,
+    status NVARCHAR(40) NOT NULL,
+    priority INT NOT NULL DEFAULT 50,
+    total_items INT NOT NULL DEFAULT 0,
+    completed_items INT NOT NULL DEFAULT 0,
+    review_items INT NOT NULL DEFAULT 0,
+    failed_items INT NOT NULL DEFAULT 0,
+    created_at DATETIME2(3) NOT NULL DEFAULT SYSUTCDATETIME(),
+    started_at DATETIME2(3) NULL,
+    finished_at DATETIME2(3) NULL,
+    updated_at DATETIME2(3) NOT NULL DEFAULT SYSUTCDATETIME()
+);
 ```
+
+`product_work_item` must include `partnumber`, `category_code`, optional `channel_code`, `context_hash CHAR(64)`, `input_json`, `status`, `current_step`, `progress_pct`, `priority`, `attempt_count`, `max_attempts`, `next_attempt_at`, `claimed_by`, `claimed_at`, `claim_expires_at`, errors and timestamps. Add a filtered unique index that prevents duplicate active `partnumber + work_type/context_hash` through a persisted work key or an equivalent transaction-safe unique strategy. Add claim index ordered by `status, next_attempt_at, priority DESC, product_work_item_id`.
+
+- [ ] **Step 4: Run the test and verify pass**
+
+Run: `pytest tests/test_product_work_queue_schema.py -v`
+
 Expected: PASS.
 
-**Step 4 — Commit**
+- [ ] **Step 5: Commit**
+
 ```bash
 git add sql/006_product_work_queue_v2.sql tests/test_product_work_queue_schema.py
 git commit -m "feat: add generic product work queue schema"
@@ -51,286 +97,372 @@ git commit -m "feat: add generic product work queue schema"
 
 ---
 
-## Task 2: Modelos de dominio y normalización
+### Task 2: Domain models and repository
 
 **Files:**
 - Create: `src/stech_mcp/domain/product_work_models.py`
-- Create: `tests/test_product_work_models.py`
-
-**Step 1 — Prueba fallando**
-
-Probar:
-- conjuntos válidos de `WORK_TYPES`, `JOB_STATES`, `ITEM_STATES`;
-- `normalize_partnumber()`;
-- cálculo determinístico de `context_hash` para evitar duplicados;
-- estados terminales y retryables.
-
-Run:
-```bash
-pytest tests/test_product_work_models.py -q
-```
-Expected: FAIL.
-
-**Step 2 — Implementación mínima**
-
-Definir `ENRICH_TECHNICAL`, `RESEARCH_IDENTITY`, `RESEARCH_IMAGES`, `PREPARE_CHANNEL`, `PUBLISH_CHANNEL`; helper de hash sobre `work_type`, PN, categoría, canal/contexto relevante; no incluir campos comerciales volátiles en el hash técnico.
-
-**Step 3 — Verificar y commit**
-```bash
-pytest tests/test_product_work_models.py -q
-git add src/stech_mcp/domain/product_work_models.py tests/test_product_work_models.py
-git commit -m "feat: add product work domain contract"
-```
-
----
-
-## Task 3: Repositorio persistente con claim atómico
-
-**Files:**
 - Create: `src/stech_mcp/db/product_work_repository.py`
-- Create: `tests/test_product_work_repository.py`
-- Create: `tests/test_product_work_repository_transitions.py`
+- Test: `tests/test_product_work_models.py`
+- Test: `tests/test_product_work_repository.py`
+- Test: `tests/test_product_work_repository_transitions.py`
 
-**Step 1 — Pruebas fallando**
+**Interfaces:**
+- Consumes: tables from Task 1 and existing DB connection factory pattern.
+- Produces:
+  - `make_context_hash(work_type: str, partnumber: str, category_code: str | None, channel_code: str | None) -> str`
+  - `ProductWorkRepository.create_job(...) -> dict[str, object]`
+  - `ProductWorkRepository.claim_next(worker_id: str, lease_seconds: int) -> dict[str, object] | None`
+  - `ProductWorkRepository.transition_item(...) -> dict[str, object]`
+  - `ProductWorkRepository.schedule_retry(...) -> dict[str, object]`
 
-Cubrir:
-- crear un job con N items;
-- si el mismo PN/contexto ya está activo, devolver `ALREADY_ACTIVE` y no duplicar;
-- claim ordenado por mayor `priority`, luego antigüedad;
-- claim solo si `next_attempt_at <= now`;
-- lease atómico con `UPDLOCK, READPAST` o patrón SQL equivalente;
-- renovar lease;
-- recuperar leases vencidos;
-- transición válida/inválida;
-- retry incrementa `attempt_count` y programa `next_attempt_at`;
-- registrar event y attempt;
-- resumen del job.
+- [ ] **Step 1: Write failing model tests**
 
-Run:
-```bash
-pytest tests/test_product_work_repository.py tests/test_product_work_repository_transitions.py -q
+```python
+from stech_mcp.domain.product_work_models import make_context_hash, TERMINAL_ITEM_STATES
+
+
+def test_context_hash_is_stable_and_case_normalized():
+    a = make_context_hash("ENRICH_TECHNICAL", "82yu00xylm", "laptop", None)
+    b = make_context_hash("ENRICH_TECHNICAL", "82YU00XYLM", "LAPTOP", None)
+    assert a == b
+    assert len(a) == 64
+
+
+def test_terminal_states_do_not_include_retryable():
+    assert "COMPLETED" in TERMINAL_ITEM_STATES
+    assert "FAILED_RETRYABLE" not in TERMINAL_ITEM_STATES
 ```
-Expected: FAIL.
 
-**Step 2 — Implementar repository**
+- [ ] **Step 2: Run and verify failure**
 
-Métodos mínimos:
-- `create_job(...)`
-- `get_job(job_id)`
-- `list_jobs(...)`
-- `claim_next(worker_id, lease_seconds)`
-- `renew_claim(item_id, worker_id, lease_seconds)`
-- `transition_item(...)`
-- `record_attempt_start/end(...)`
-- `schedule_retry(...)`
-- `release_expired_claims()`
-- `retry_item(...)`
-- `cancel_item(...)`
-- `refresh_job_summary(...)`
+Run: `pytest tests/test_product_work_models.py -v`
 
-No reutilizar `ProductLoaderRepository`; compartir solo helpers genéricos si realmente son neutrales.
+Expected: FAIL with import/module not found.
 
-**Step 3 — Verificar**
-```bash
-pytest tests/test_product_work_repository.py tests/test_product_work_repository_transitions.py -q
+- [ ] **Step 3: Implement domain constants and hash**
+
+Use exact work types:
+
+```python
+WORK_TYPES = {
+    "ENRICH_TECHNICAL",
+    "RESEARCH_IDENTITY",
+    "RESEARCH_IMAGES",
+    "PREPARE_CHANNEL",
+    "PUBLISH_CHANNEL",
+}
 ```
+
+Use SHA-256 over normalized JSON containing only work type, PN, category and channel. Do not include price or stock.
+
+- [ ] **Step 4: Write repository tests before repository code**
+
+```python
+def test_claim_prefers_high_priority(repo, seeded_jobs):
+    item = repo.claim_next("worker-a", lease_seconds=120)
+    assert item["priority"] == 100
+    assert item["claimed_by"] == "worker-a"
+
+
+def test_expired_lease_can_be_reclaimed(repo, expired_claim):
+    item = repo.claim_next("worker-b", lease_seconds=120)
+    assert item["item_id"] == expired_claim["item_id"]
+```
+
+Repository tests must also cover duplicate-active prevention, valid/invalid transitions, attempt history, retry backoff and job summary.
+
+- [ ] **Step 5: Implement repository with atomic claim**
+
+Use one transaction and SQL locking equivalent to:
+
+```sql
+;WITH next_item AS (
+    SELECT TOP (1) i.product_work_item_id
+    FROM dbo.product_work_item i WITH (UPDLOCK, READPAST, ROWLOCK)
+    WHERE i.status IN (N'QUEUED', N'FAILED_RETRYABLE')
+      AND (i.next_attempt_at IS NULL OR i.next_attempt_at <= SYSUTCDATETIME())
+      AND (i.claim_expires_at IS NULL OR i.claim_expires_at <= SYSUTCDATETIME())
+    ORDER BY i.priority DESC, i.product_work_item_id
+)
+UPDATE i
+SET claimed_by = ?, claimed_at = SYSUTCDATETIME(),
+    claim_expires_at = DATEADD(SECOND, ?, SYSUTCDATETIME()),
+    updated_at = SYSUTCDATETIME()
+OUTPUT INSERTED.*
+FROM dbo.product_work_item i
+JOIN next_item n ON n.product_work_item_id = i.product_work_item_id;
+```
+
+Implement explicit transition validation in Python before SQL update.
+
+- [ ] **Step 6: Run repository tests**
+
+Run: `pytest tests/test_product_work_models.py tests/test_product_work_repository.py tests/test_product_work_repository_transitions.py -v`
+
 Expected: PASS.
 
-**Step 4 — Commit**
+- [ ] **Step 7: Commit**
+
 ```bash
-git add src/stech_mcp/db/product_work_repository.py tests/test_product_work_repository.py tests/test_product_work_repository_transitions.py
-git commit -m "feat: persist generic product work jobs"
+git add src/stech_mcp/domain/product_work_models.py src/stech_mcp/db/product_work_repository.py tests/test_product_work_models.py tests/test_product_work_repository.py tests/test_product_work_repository_transitions.py
+git commit -m "feat: persist and claim generic product work"
 ```
 
 ---
 
-## Task 4: Servicio de control de jobs
+### Task 3: Fast MCP control surface
 
 **Files:**
 - Create: `src/stech_mcp/services/product_work_service.py`
-- Create: `tests/test_product_work_service.py`
-
-**Step 1 — Prueba fallando**
-
-Validar que el servicio:
-- normaliza PN;
-- deduplica una lista repetida;
-- crea un job `ENRICH_TECHNICAL` sin price/stock en `input_json`;
-- permite prioridad 10/50/100;
-- expone estados resumidos;
-- permite retry/cancel solo en estados válidos.
-
-**Step 2 — Implementar**
-
-Este servicio es síncrono y rápido: nunca ejecuta el enrichment; solo persiste órdenes/control.
-
-**Step 3 — Verificar y commit**
-```bash
-pytest tests/test_product_work_service.py -q
-git add src/stech_mcp/services/product_work_service.py tests/test_product_work_service.py
-git commit -m "feat: add product work job service"
-```
-
----
-
-## Task 5: Herramientas MCP de cola
-
-**Files:**
 - Create: `src/stech_mcp/tools/product_work.py`
-- Modify: `src/stech_mcp/server.py`
-- Create: `tests/test_server_product_work_tools.py`
+- Modify: `src/stech_mcp/server.py` in the existing tool-registration section.
+- Test: `tests/test_product_work_service.py`
+- Test: `tests/test_server_product_work_tools.py`
 
-**Step 1 — Prueba fallando**
+**Interfaces:**
+- Consumes: `ProductWorkRepository` from Task 2.
+- Produces:
+  - `ProductWorkService.create_job(rows, work_type, source_name, actor_source, priority) -> dict`
+  - MCP tools `product_work_job_create`, `product_work_job_get`, `product_work_job_list`, `product_work_item_retry`, `product_work_item_cancel`.
 
-Exigir herramientas:
-- `product_work_job_create`
-- `product_work_job_get`
-- `product_work_job_list`
-- `product_work_item_retry`
-- `product_work_item_cancel`
+- [ ] **Step 1: Write failing service test**
 
-Probar creación con varios PNs, deduplicación y que la respuesta regrese `job_id`, conteos y items sin esperar ejecución.
-
-**Step 2 — Implementar y registrar tools**
-
-El tool `product_work_job_create` acepta lista de PNs/rows, `work_type`, categoría opcional, contexto/canal opcional, prioridad y `actor_source`.
-
-**Step 3 — Verificar**
-```bash
-pytest tests/test_server_product_work_tools.py tests/test_server_smoke.py -q
+```python
+def test_create_enrichment_job_dedupes_and_strips_commercial_fields(service):
+    result = service.create_job(
+        rows=[
+            {"partnumber": "PN1", "price": 99, "stock": 8},
+            {"partnumber": "pn1", "price": 101, "stock": 2},
+        ],
+        work_type="ENRICH_TECHNICAL",
+        source_name="PRODUCT_WORKBENCH",
+        actor_source="SCR_UI",
+        priority=50,
+    )
+    assert result["total_items"] == 1
+    item_input = result["items"][0]["input"]
+    assert "price" not in item_input
+    assert "stock" not in item_input
 ```
+
+- [ ] **Step 2: Run and verify failure**
+
+Run: `pytest tests/test_product_work_service.py -v`
+
+Expected: FAIL because service is missing.
+
+- [ ] **Step 3: Implement service**
+
+The allowed technical input keys are exactly `row_number`, `partnumber`, `category_code`, `channel_code`, `template_code`, `requested_fields`, `source_context`. Discard `price`, `stock`, dates and marketplace commercial values for `ENRICH_TECHNICAL`.
+
+- [ ] **Step 4: Write failing MCP tool registration test**
+
+```python
+def test_product_work_tools_are_registered(tool_names):
+    required = {
+        "product_work_job_create", "product_work_job_get", "product_work_job_list",
+        "product_work_item_retry", "product_work_item_cancel",
+    }
+    assert required <= set(tool_names)
+```
+
+- [ ] **Step 5: Implement and register tools**
+
+Tools call `ProductWorkService` and return immediately after DB operations. No tool starts a daemon thread or waits for completion.
+
+- [ ] **Step 6: Run tests**
+
+Run: `pytest tests/test_product_work_service.py tests/test_server_product_work_tools.py tests/test_server_smoke.py -v`
+
 Expected: PASS.
 
-**Step 4 — Commit**
+- [ ] **Step 7: Commit**
+
 ```bash
-git add src/stech_mcp/tools/product_work.py src/stech_mcp/server.py tests/test_server_product_work_tools.py
-git commit -m "feat: expose generic product work MCP tools"
+git add src/stech_mcp/services/product_work_service.py src/stech_mcp/tools/product_work.py src/stech_mcp/server.py tests/test_product_work_service.py tests/test_server_product_work_tools.py
+git commit -m "feat: expose product work queue through MCP"
 ```
 
 ---
 
-## Task 6: Worker loop independiente y dispatcher
+### Task 4: Independent worker and dispatcher
 
 **Files:**
 - Create: `src/stech_mcp/services/product_work_dispatcher.py`
 - Create: `src/stech_mcp/worker.py`
-- Create: `tests/test_product_work_dispatcher.py`
-- Create: `tests/test_product_work_worker.py`
+- Test: `tests/test_product_work_dispatcher.py`
+- Test: `tests/test_product_work_worker.py`
 
-**Step 1 — Pruebas fallando**
+**Interfaces:**
+- Consumes: `ProductWorkRepository.claim_next()` and handler callable `handler(item: dict, progress: Callable[[str, int], None]) -> dict`.
+- Produces:
+  - `ProductWorkDispatcher.register(work_type: str, handler: Callable) -> None`
+  - `ProductWorkWorker.run_once() -> bool`
+  - `ProductWorkWorker.run_forever(stop_event) -> None`
 
-Cubrir:
-- dispatcher selecciona handler por `work_type`;
-- work type desconocido → FAILED controlado;
-- excepción temporal → `FAILED_RETRYABLE` + backoff;
-- excepción permanente → `FAILED`;
-- lease se renueva durante item largo;
-- un fallo no detiene el siguiente item;
-- al arrancar se liberan claims expirados;
-- `run_once()` es determinístico y testeable;
-- `run_forever()` solo envuelve polling y shutdown limpio.
+- [ ] **Step 1: Write failing worker tests**
 
-**Step 2 — Implementar**
+```python
+def test_worker_failure_does_not_stop_next_item(worker, repo):
+    assert worker.run_once() is True  # first handler raises permanent error
+    assert worker.run_once() is True  # second item still runs
+    assert repo.get_item(1)["status"] == "FAILED"
+    assert repo.get_item(2)["status"] == "COMPLETED"
 
-Inicialmente registrar un handler placeholder explícito para `ENRICH_TECHNICAL` que será reemplazado por el Plan B; si se invoca antes, debe devolver `REVIEW_REQUIRED`/error de capacidad controlado, nunca fingir enriquecimiento.
 
-Configurar:
-- `worker_id` estable por host/proceso;
-- poll interval;
-- lease seconds;
-- exponential backoff con techo;
-- stop event para apagado limpio.
-
-**Step 3 — Verificar**
-```bash
-pytest tests/test_product_work_dispatcher.py tests/test_product_work_worker.py -q
+def test_retryable_failure_gets_backoff(worker, repo):
+    worker.run_once()
+    item = repo.get_item(1)
+    assert item["status"] == "FAILED_RETRYABLE"
+    assert item["next_attempt_at"] is not None
 ```
+
+- [ ] **Step 2: Run and verify failure**
+
+Run: `pytest tests/test_product_work_dispatcher.py tests/test_product_work_worker.py -v`
+
+Expected: FAIL.
+
+- [ ] **Step 3: Implement dispatcher and worker**
+
+Backoff is deterministic: `min(60 * (2 ** max(attempt_count - 1, 0)), 3600)` seconds. Renew lease before each major handler progress callback. Unknown `work_type` becomes permanent `FAILED` with code `UNSUPPORTED_WORK_TYPE`.
+
+Until Plan B registers the real enrichment handler, register an explicit handler that returns `REVIEW_REQUIRED` with code `ENRICHMENT_HANDLER_NOT_INSTALLED`; never report false completion.
+
+- [ ] **Step 4: Run tests**
+
+Run: `pytest tests/test_product_work_dispatcher.py tests/test_product_work_worker.py -v`
+
 Expected: PASS.
 
-**Step 4 — Commit**
+- [ ] **Step 5: Commit**
+
 ```bash
 git add src/stech_mcp/services/product_work_dispatcher.py src/stech_mcp/worker.py tests/test_product_work_dispatcher.py tests/test_product_work_worker.py
-git commit -m "feat: add persistent product work worker"
+git commit -m "feat: add independent persistent product worker"
 ```
 
 ---
 
-## Task 7: Configuración y ejecución en Windows/PC020
+### Task 5: PC020 Windows Service deployment
 
 **Files:**
-- Modify: `.env.example`
-- Modify: `pyproject.toml`
+- Modify: `pyproject.toml` project dependencies and scripts sections.
+- Modify: `.env.example` worker configuration section.
+- Create: `src/stech_mcp/worker_windows_service.py`
 - Create: `deploy/windows/INSTALL_ENRICHMENT_WORKER.ps1`
 - Create: `deploy/windows/UNINSTALL_ENRICHMENT_WORKER.ps1`
-- Create: `deploy/windows/RUN_ENRICHMENT_WORKER.ps1`
-- Create: `tests/test_worker_deployment_contract.py`
+- Test: `tests/test_worker_deployment_contract.py`
 
-**Step 1 — Prueba fallando**
+**Interfaces:**
+- Consumes: `stech_mcp.worker:main` from Task 4.
+- Produces: console command `stech-enrichment-worker` and Windows Service name `STECHEnrichmentWorker`.
 
-Exigir variables documentadas:
-- `STECH_WORKER_ENABLED`
-- `STECH_WORKER_POLL_SECONDS`
-- `STECH_WORKER_LEASE_SECONDS`
-- `STECH_WORKER_MAX_ATTEMPTS`
-- `STECH_WORKER_CONCURRENCY` (V2 inicial = 1 por defecto)
+- [ ] **Step 1: Write failing deployment contract test**
 
-El script de instalación debe usar una estrategia Windows explícita y reversible. Preferencia: wrapper de servicio documentado; si se usa `pywin32`, dejar dependencia Windows condicional y servicio con auto-start.
+```python
+from pathlib import Path
 
-**Step 2 — Implementar**
 
-Agregar entry point de consola, por ejemplo:
+def test_worker_has_windows_service_contract():
+    pyproject = Path("pyproject.toml").read_text(encoding="utf-8")
+    install = Path("deploy/windows/INSTALL_ENRICHMENT_WORKER.ps1").read_text(encoding="utf-8")
+    assert 'stech-enrichment-worker = "stech_mcp.worker:main"' in pyproject
+    assert "pywin32" in pyproject
+    assert "STECHEnrichmentWorker" in install
+```
+
+- [ ] **Step 2: Run and verify failure**
+
+Run: `pytest tests/test_worker_deployment_contract.py -v`
+
+Expected: FAIL.
+
+- [ ] **Step 3: Implement exact Windows service strategy**
+
+Add conditional dependency:
+
+```toml
+"pywin32>=306; sys_platform == 'win32'",
+```
+
+Add script:
+
 ```toml
 [project.scripts]
 stech-enrichment-worker = "stech_mcp.worker:main"
 ```
 
-Instalación debe ser idempotente y no instalar el MCP server como worker.
+`worker_windows_service.py` subclasses `win32serviceutil.ServiceFramework`, service name `STECHEnrichmentWorker`, and runs the same worker loop. PowerShell install script executes `python -m stech_mcp.worker_windows_service install --startup auto` then `start`; uninstall executes `stop` then `remove` and tolerates already-stopped/not-installed state.
 
-**Step 3 — Verificar**
-```bash
-pytest tests/test_worker_deployment_contract.py -q
+Required env values:
+
+```text
+STECH_WORKER_ENABLED=true
+STECH_WORKER_POLL_SECONDS=5
+STECH_WORKER_LEASE_SECONDS=300
+STECH_WORKER_MAX_ATTEMPTS=3
+STECH_WORKER_CONCURRENCY=1
 ```
+
+- [ ] **Step 4: Run test**
+
+Run: `pytest tests/test_worker_deployment_contract.py -v`
+
 Expected: PASS.
 
-**Step 4 — Commit**
+- [ ] **Step 5: Commit**
+
 ```bash
-git add .env.example pyproject.toml deploy/windows tests/test_worker_deployment_contract.py
-git commit -m "feat: add Windows enrichment worker deployment"
+git add pyproject.toml .env.example src/stech_mcp/worker_windows_service.py deploy/windows/INSTALL_ENRICHMENT_WORKER.ps1 deploy/windows/UNINSTALL_ENRICHMENT_WORKER.ps1 tests/test_worker_deployment_contract.py
+git commit -m "feat: install enrichment worker as Windows service"
 ```
 
 ---
 
-## Task 8: Prueba de recuperación extremo a extremo de la cola
+### Task 6: Crash recovery integration test
 
 **Files:**
-- Create: `tests/test_product_work_recovery_integration.py`
-- Modify only if needed: queue/worker files from prior tasks.
+- Test: `tests/test_product_work_recovery_integration.py`
 
-**Step 1 — Crear escenario**
+**Interfaces:**
+- Consumes: complete queue + worker from Tasks 1–5.
+- Produces: verified restart/retry behavior contract used by later plans.
 
-1. job con 3 PNs;
-2. worker reclama item 1;
-3. simular proceso muerto dejando lease expirar;
-4. worker nuevo recupera item 1;
-5. item 1 termina;
-6. item 2 falla retryable y luego pasa;
-7. item 3 falla permanente;
-8. job termina `PARTIAL`;
-9. eventos/intentos conservan historia.
+- [ ] **Step 1: Write the integration test**
 
-**Step 2 — Run**
-```bash
-pytest tests/test_product_work_recovery_integration.py -q
+```python
+def test_job_survives_abandoned_claim_and_partial_failure(integration_repo, worker_factory):
+    job = integration_repo.seed_job(["PN1", "PN2", "PN3"])
+    abandoned = integration_repo.claim_next("dead-worker", lease_seconds=1)
+    integration_repo.force_claim_expired(abandoned["item_id"])
+
+    worker = worker_factory("replacement-worker")
+    while worker.run_once():
+        pass
+
+    final = integration_repo.get_job(job["job_id"])
+    assert final["status"] == "PARTIAL"
+    assert final["items"][0]["attempt_count"] >= 1
+    assert final["events"]
 ```
+
+Use deterministic fake handlers: PN1 succeeds, PN2 fails retryable once then succeeds, PN3 fails permanently.
+
+- [ ] **Step 2: Run focused test**
+
+Run: `pytest tests/test_product_work_recovery_integration.py -v`
+
 Expected: PASS.
 
-**Step 3 — Regresión completa**
-```bash
-pytest -q
-```
-Expected: PASS sin alterar el flujo existente de `product_loader_job`/VTEX.
+- [ ] **Step 3: Run full MCP regression suite**
 
-**Step 4 — Commit**
+Run: `pytest -q`
+
+Expected: PASS; existing VTEX/ProductLoader tests remain green.
+
+- [ ] **Step 4: Commit**
+
 ```bash
 git add tests/test_product_work_recovery_integration.py
 git commit -m "test: verify product work crash recovery"
@@ -338,12 +470,9 @@ git commit -m "test: verify product work crash recovery"
 
 ## Definition of Done
 
-- La cola es genérica y persistente.
-- No depende de threads daemon del MCP.
-- Reiniciar MCP no pierde trabajos.
-- Reiniciar worker permite recuperar leases vencidos.
-- No se duplican trabajos activos equivalentes.
-- Retry/backoff/prioridad funcionan.
-- Herramientas MCP crean/consultan/controlan, pero no bloquean esperando el trabajo.
-- `product_loader_job` VTEX existente permanece funcional.
-- Suite completa verde.
+- Generic queue persists jobs independently of VTEX loader.
+- MCP creates/reads/controls jobs without long-running calls.
+- Worker is a separate process and Windows Service on PC020.
+- Leases, retry/backoff, priority, dedupe and crash recovery are tested.
+- No technical-job payload contains price or stock.
+- Existing full MCP suite passes.
