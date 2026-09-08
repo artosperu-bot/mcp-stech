@@ -1,393 +1,396 @@
-# Excel Template Engine V2 — Implementation Plan
+# Excel Template Engine V2 Implementation Plan
 
-> **Para Steve:** REQUIRED SUB-SKILL: ejecutar con `superpowers:subagent-driven-development` o `superpowers:executing-plans`, con TDD y commits pequeños.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** reconocer automáticamente plantillas Excel de Falabella, Coolbox y futuros canales por estructura interna, mapear columnas a campos canónicos STECH, detectar Part Numbers y calcular qué falta antes de enviar productos a la cola de enriquecimiento.
+**Goal:** Recognize Falabella, Coolbox and future marketplace Excel files from workbook structure, map their columns to canonical STECH fields, detect Part Numbers, calculate missing fields, and feed the same persistent enrichment queue.
 
-**Architecture:** V8 hace I/O del archivo y extrae un manifest neutral; STECH MCP posee las reglas de reconocimiento/mapping/validación. El Excel es entrada/salida de canal, nunca la ficha maestra. Las columnas comerciales pueden conservarse para exportación pero quedan fuera de `ENRICH_TECHNICAL`.
+**Architecture:** V8 performs physical workbook upload/read and sends a compact neutral manifest; STECH MCP owns template recognition, mapping and validation rules. Excel remains a channel input/output format, never Product Workspace master data. Commercial columns are preserved but excluded from `ENRICH_TECHNICAL`.
 
-**Tech Stack:** Python 3.12, openpyxl existente, SQL Server, FastMCP, pytest.
+**Tech Stack:** Python 3.12, openpyxl, SQL Server 2019, FastMCP, pytest.
+
+**Spec:** `docs/superpowers/specs/2026-09-08-product-enrichment-engine-v2-design.md`
+
+## Global Constraints
+
+- Recognition MUST NOT rely only on filename.
+- High-confidence recognition may proceed automatically; medium-confidence requires UI confirmation; low/ambiguous recognition must not create a job.
+- Exact thresholds are: `HIGH >= 90`, `MEDIUM 70..89`, `LOW < 70`; a top-two score gap `< 8` is `AMBIGUOUS` regardless of top score.
+- `PRICE`, `STOCK`, promotion dates and other commercial columns use scope `COMMERCIAL` and never become technical missing fields.
+- Coolbox and Falabella are peer templates mapped to the same canonical facts.
+- Physical Excel export remains in V8; MCP returns template identity, mappings, readiness and row values.
 
 ---
 
-## Task 1: Registry SQL de plantillas y campos
+### Task 1: Marketplace template registry
 
 **Files:**
 - Create: `sql/009_marketplace_templates_v2.sql`
-- Create: `tests/test_marketplace_template_schema.py`
+- Create: `src/stech_mcp/db/marketplace_template_repository.py`
+- Test: `tests/test_marketplace_template_schema.py`
+- Test: `tests/test_marketplace_template_repository.py`
 
-**Step 1 — Prueba fallando**
+**Interfaces:**
+- Consumes: STECH_MCP DB connection factory.
+- Produces:
+  - `marketplace_template`
+  - `marketplace_template_field`
+  - `marketplace_field_alias`
+  - `MarketplaceTemplateRepository.list_active() -> list[dict]`
+  - `MarketplaceTemplateRepository.get(template_code: str) -> dict | None`.
 
-Exigir tablas:
-- `marketplace_template`
-- `marketplace_template_field`
-- `marketplace_field_alias`
+- [ ] **Step 1: Write the failing SQL contract test**
 
-Campos mínimos template:
-- `template_code`, `channel_code`, `category_code`, `version_code`, `sheet_pattern`, `header_row_min/max`, `is_active`.
+```python
+from pathlib import Path
 
-Campos mínimos field:
-- posición opcional, nombre esperado, `field_code` canónico opcional, required flag, data scope (`TECHNICAL`, `IDENTITY`, `CONTENT`, `COMMERCIAL`, `CONTROL`), aliases y weight de reconocimiento.
 
-Run:
-```bash
-pytest tests/test_marketplace_template_schema.py -q
+def test_marketplace_template_schema_contract():
+    text = Path("sql/009_marketplace_templates_v2.sql").read_text(encoding="utf-8").upper()
+    for token in ("MARKETPLACE_TEMPLATE", "MARKETPLACE_TEMPLATE_FIELD", "MARKETPLACE_FIELD_ALIAS", "DATA_SCOPE"):
+        assert token in text
 ```
-Expected: FAIL.
 
-**Step 2 — Implementar SQL**
+- [ ] **Step 2: Run and verify failure**
 
-Incluir índices por canal/categoría y template activo. No poner reglas de negocio de investigación en estas tablas.
+Run: `pytest tests/test_marketplace_template_schema.py -v`
 
-**Step 3 — Verify/commit**
+Expected: FAIL because SQL file does not exist.
+
+- [ ] **Step 3: Implement exact SQL contract**
+
+`marketplace_template` fields: `template_code`, `channel_code`, `category_code`, `version_code`, `sheet_pattern`, `header_row_min`, `header_row_max`, `is_active`, timestamps.
+
+`marketplace_template_field` fields: `template_code`, `ordinal`, `header_name`, `field_code`, `required_flag`, `data_scope`, `recognition_weight`, `is_distinctive`.
+
+`marketplace_field_alias` fields: `template_code` nullable, `field_code`, `alias_text`, `normalized_alias`.
+
+Allowed scopes exactly: `TECHNICAL`, `IDENTITY`, `CONTENT`, `COMMERCIAL`, `CONTROL`.
+
+- [ ] **Step 4: Write repository test then implement repository**
+
+```python
+def test_repository_excludes_inactive_templates(repo):
+    rows = repo.list_active()
+    assert rows
+    assert all(row["is_active"] for row in rows)
+```
+
+Normalize aliases using Unicode NFKD, remove diacritics, collapse whitespace and lowercase.
+
+- [ ] **Step 5: Run tests and commit**
+
 ```bash
-pytest tests/test_marketplace_template_schema.py -q
-git add sql/009_marketplace_templates_v2.sql tests/test_marketplace_template_schema.py
+pytest tests/test_marketplace_template_schema.py tests/test_marketplace_template_repository.py -v
+git add sql/009_marketplace_templates_v2.sql src/stech_mcp/db/marketplace_template_repository.py tests/test_marketplace_template_schema.py tests/test_marketplace_template_repository.py
 git commit -m "feat: add marketplace Excel template registry"
 ```
 
 ---
 
-## Task 2: Repositorio de templates y aliases
-
-**Files:**
-- Create: `src/stech_mcp/db/marketplace_template_repository.py`
-- Create: `tests/test_marketplace_template_repository.py`
-
-**Step 1 — Prueba fallando**
-
-Probar:
-- obtener templates activos;
-- cargar campos/aliases;
-- múltiples versiones por canal/categoría;
-- template desactivado no participa;
-- alias normalizado case/espacios/acentos.
-
-**Step 2 — Implementar**
-
-**Step 3 — Verify/commit**
-```bash
-pytest tests/test_marketplace_template_repository.py -q
-git add src/stech_mcp/db/marketplace_template_repository.py tests/test_marketplace_template_repository.py
-git commit -m "feat: read marketplace template definitions"
-```
-
----
-
-## Task 3: Workbook Manifest neutral
+### Task 2: Neutral workbook manifest
 
 **Files:**
 - Create: `src/stech_mcp/domain/excel_manifest.py`
 - Create: `src/stech_mcp/services/excel_manifest_builder.py`
-- Create: `tests/test_excel_manifest_builder.py`
+- Test: `tests/test_excel_manifest_builder.py`
 
-**Step 1 — Prueba fallando**
+**Interfaces:**
+- Consumes: workbook bytes/stream for local MCP tests or JSON manifest produced by V8.
+- Produces `WorkbookManifest.to_dict() -> dict` with `filename`, `sheets`, `header_candidates`, `sample_rows`.
 
-Generar workbooks pequeños en memoria con openpyxl y probar que el manifest contiene:
-- nombres de hojas;
-- dimensiones aproximadas;
-- candidatos de filas de encabezado;
-- textos normalizados de encabezados;
-- muestras limitadas de filas;
-- tipos básicos;
-- sin fórmulas ejecutadas ni macros.
+- [ ] **Step 1: Write failing manifest test**
 
-**Step 2 — Implementar**
+```python
+from io import BytesIO
+from openpyxl import Workbook
 
-El builder debe aceptar bytes/stream local cuando se usa dentro de MCP, pero el contrato serializable principal será JSON para que V8 pueda construir el mismo manifest sin mover archivos grandes entre procesos.
 
-Limitar tamaño de muestras para no mandar miles de filas al recognizer.
+def test_manifest_finds_header_candidates_without_filename_dependency(builder):
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Laptops-All in one"
+    ws.append(["nota", None, None])
+    ws.append(["Sku code ref", "Título", "Marca", "Modelo", "RAM"])
+    ws.append(["PN1", "Laptop", "Lenovo", "V15", "16 GB"])
+    stream = BytesIO(); wb.save(stream)
+    manifest = builder.from_bytes(stream.getvalue(), filename="archivo-random.xlsx")
+    assert manifest.header_candidates[0].row_number == 2
+    assert "Sku code ref" in manifest.header_candidates[0].headers
+```
 
-**Step 3 — Verify/commit**
+- [ ] **Step 2: Run and verify failure**
+
+Run: `pytest tests/test_excel_manifest_builder.py -v`
+
+Expected: FAIL.
+
+- [ ] **Step 3: Implement bounded manifest builder**
+
+Inspect max 20 rows per sheet for header candidates, retain max 10 sample product rows, max 200 columns, and return workbook error `WORKBOOK_TOO_LARGE` if sheet count exceeds 50. Load with `data_only=False`, `read_only=True`; never evaluate formulas or macros.
+
+Serializable shape:
+
+```python
+{
+  "filename": "archivo-random.xlsx",
+  "sheets": [{"name": "Laptops-All in one", "max_row": 3, "max_column": 5}],
+  "header_candidates": [{"sheet": "Laptops-All in one", "row_number": 2, "headers": ["Sku code ref", "Título", "Marca", "Modelo", "RAM"]}],
+  "sample_rows": [{"sheet": "Laptops-All in one", "row_number": 3, "values": ["PN1", "Laptop", "Lenovo", "V15", "16 GB"]}],
+}
+```
+
+- [ ] **Step 4: Run and commit**
+
 ```bash
-pytest tests/test_excel_manifest_builder.py -q
+pytest tests/test_excel_manifest_builder.py -v
 git add src/stech_mcp/domain/excel_manifest.py src/stech_mcp/services/excel_manifest_builder.py tests/test_excel_manifest_builder.py
 git commit -m "feat: build neutral workbook manifests"
 ```
 
 ---
 
-## Task 4: Recognizer con scoring explicable
+### Task 3: Structure-based recognizer and mapper
 
 **Files:**
 - Create: `src/stech_mcp/services/excel_template_recognizer.py`
-- Create: `tests/test_excel_template_recognizer.py`
-
-**Step 1 — Pruebas fallando**
-
-Casos:
-- nombre de archivo incorrecto pero headers Coolbox correctos → reconocer Coolbox;
-- hoja renombrada pero 95% headers → seguir reconociendo;
-- dos columnas nuevas → no romper;
-- Falabella vs Coolbox con campos parecidos → usar distinctive fields/weights;
-- score alto/medio/bajo;
-- empate cercano → `AMBIGUOUS`, no escoger silenciosamente.
-
-Scoring recomendado:
-- headers/aliases: peso principal;
-- campos distintivos: bonus fuerte;
-- hoja: bonus, nunca único criterio;
-- orden aproximado: bonus menor;
-- PN/SKU candidate: bonus;
-- nombre de archivo: señal débil opcional.
-
-**Step 2 — Implementar salida explicable**
-
-Retornar:
-- `template_code`, channel, category, version;
-- confidence 0-100;
-- matched headers;
-- missing distinctive headers;
-- header row/sheet;
-- razones del score;
-- alternativas cercanas.
-
-**Step 3 — Verify/commit**
-```bash
-pytest tests/test_excel_template_recognizer.py -q
-git add src/stech_mcp/services/excel_template_recognizer.py tests/test_excel_template_recognizer.py
-git commit -m "feat: recognize marketplace Excel templates by structure"
-```
-
----
-
-## Task 5: Mapper columnas → campos canónicos
-
-**Files:**
 - Create: `src/stech_mcp/services/excel_template_mapper.py`
-- Create: `tests/test_excel_template_mapper.py`
+- Test: `tests/test_excel_template_recognizer.py`
+- Test: `tests/test_excel_template_mapper.py`
 
-**Step 1 — Pruebas fallando**
+**Interfaces:**
+- Consumes: `WorkbookManifest` and active template definitions.
+- Produces:
+  - `ExcelTemplateRecognizer.recognize(manifest: dict) -> dict`
+  - `ExcelTemplateMapper.map_headers(template_code: str, headers: list[str]) -> list[dict]`.
 
-Ejemplos:
-- `Memoria RAM`, `Capacidad RAM`, `RAM` → `ram_gb`;
-- `Autonomía`, `Duración de batería` → `battery_runtime_hours`;
-- `Sku code ref` / seller SKU definido por template → campo de identidad/PN apropiado;
-- columnas price/stock → scope `COMMERCIAL`, jamás pending technical;
-- columna desconocida → `UNMAPPED`, preservada para revisión.
+- [ ] **Step 1: Write failing recognizer tests**
 
-**Step 2 — Implementar**
+```python
+def test_recognizer_uses_structure_not_filename(recognizer, coolbox_manifest):
+    coolbox_manifest["filename"] = "falabella.xlsx"
+    result = recognizer.recognize(coolbox_manifest)
+    assert result["template_code"] == "COOLBOX_LAPTOP_V1"
+    assert result["confidence_band"] == "HIGH"
 
-No transformar valores marketplace todavía; solo resolver la identidad del campo y su scope.
 
-**Step 3 — Verify/commit**
+def test_close_scores_are_ambiguous(recognizer, ambiguous_manifest):
+    result = recognizer.recognize(ambiguous_manifest)
+    assert result["state"] == "AMBIGUOUS"
+```
+
+- [ ] **Step 2: Implement deterministic scoring**
+
+Score 0–100 with exact weights:
+- matched weighted headers: up to 60;
+- distinctive headers: up to 20;
+- sheet-name match: up to 10;
+- relative column order: up to 5;
+- PN/SKU identifier header: up to 5.
+
+Filename contributes 0 points. Return top 3 alternatives and reasons.
+
+- [ ] **Step 3: Write failing mapper test**
+
+```python
+def test_mapper_separates_technical_and_commercial(mapper):
+    rows = mapper.map_headers("COOLBOX_LAPTOP_V1", ["Memoria RAM", "Stock", "Precio Base"])
+    by_header = {x["header"]: x for x in rows}
+    assert by_header["Memoria RAM"]["field_code"] == "ram_gb"
+    assert by_header["Stock"]["data_scope"] == "COMMERCIAL"
+    assert by_header["Precio Base"]["data_scope"] == "COMMERCIAL"
+```
+
+- [ ] **Step 4: Implement mapper**
+
+Aliases resolve only to canonical `field_code`; unknown headers return `state="UNMAPPED"` and are preserved. Never guess a canonical field from fuzzy semantic similarity alone.
+
+- [ ] **Step 5: Run and commit**
+
 ```bash
-pytest tests/test_excel_template_mapper.py -q
-git add src/stech_mcp/services/excel_template_mapper.py tests/test_excel_template_mapper.py
-git commit -m "feat: map Excel headers to canonical product fields"
+pytest tests/test_excel_template_recognizer.py tests/test_excel_template_mapper.py -v
+git add src/stech_mcp/services/excel_template_recognizer.py src/stech_mcp/services/excel_template_mapper.py tests/test_excel_template_recognizer.py tests/test_excel_template_mapper.py
+git commit -m "feat: recognize and map marketplace Excel structures"
 ```
 
 ---
 
-## Task 6: Detector de PN y extracción de filas de producto
-
-**Files:**
-- Create: `src/stech_mcp/services/excel_product_rows.py`
-- Create: `tests/test_excel_product_rows.py`
-
-**Step 1 — Pruebas fallando**
-
-Cubrir:
-- PN exacto desde columna configurada;
-- trim/uppercase sin alterar caracteres significativos;
-- filas vacías ignoradas;
-- PN duplicado reportado, no duplicado en queue input;
-- filas con SKU marketplace distinto al PN necesitan mapping explícito, no inferencia ciega;
-- conservar `row_number` y valores originales para export posterior.
-
-**Step 2 — Implementar**
-
-**Step 3 — Verify/commit**
-```bash
-pytest tests/test_excel_product_rows.py -q
-git add src/stech_mcp/services/excel_product_rows.py tests/test_excel_product_rows.py
-git commit -m "feat: extract product rows from recognized templates"
-```
-
----
-
-## Task 7: Validator contra Product Workspace/readiness
-
-**Files:**
-- Create: `src/stech_mcp/services/excel_template_validator.py`
-- Create: `tests/test_excel_template_validator.py`
-
-**Step 1 — Pruebas fallando**
-
-Para cada PN/template calcular:
-- required fields total;
-- ya disponibles en Product Workspace;
-- missing technical;
-- missing content/identity;
-- commercial fields fuera de alcance;
-- readiness del template.
-
-Caso clave: producto maestro completo pero template pide un campo específico del canal → missing channel field sin reinvestigar toda la ficha.
-
-**Step 2 — Implementar**
-
-Usar facts canónicos y mappings; no leer directamente `coolbox_preview.py` como verdad maestra.
-
-**Step 3 — Verify/commit**
-```bash
-pytest tests/test_excel_template_validator.py -q
-git add src/stech_mcp/services/excel_template_validator.py tests/test_excel_template_validator.py
-git commit -m "feat: validate template readiness against Product Workspace"
-```
-
----
-
-## Task 8: Seeds iniciales Coolbox y Falabella
+### Task 4: Initial Coolbox and Falabella template seeds
 
 **Files:**
 - Create: `sql/010_seed_marketplace_templates_v2.sql`
-- Create: `tests/test_marketplace_template_seeds.py`
+- Test: `tests/test_marketplace_template_seeds.py`
 
-**Step 1 — Prueba fallando**
+**Interfaces:**
+- Consumes: registry from Task 1 and confirmed existing template contracts from current Coolbox/V8 Falabella code.
+- Produces active seed templates `COOLBOX_LAPTOP_V1` and `FALABELLA_LAPTOP_V1`.
 
-Seed mínimo:
-- Coolbox `Laptops-All in one` usando los headers conocidos de la ficha actual;
-- Falabella LAPTOP a partir de los contratos/campos ya existentes en V8, sin inventar atributos no confirmados.
+- [ ] **Step 1: Write failing seed test**
 
-Para Coolbox, clasificar `Precio Lista`, `Precio Base`, `Fecha de Inicio`, `Fecha Fin`, `Stock` como `COMMERCIAL`; recognizer puede detectarlos, enrichment técnico los ignora.
+```python
+from pathlib import Path
 
-**Step 2 — Implementar seeds idempotentes**
 
-**Step 3 — Verify/commit**
+def test_seed_contains_peer_coolbox_and_falabella_templates():
+    text = Path("sql/010_seed_marketplace_templates_v2.sql").read_text(encoding="utf-8")
+    assert "COOLBOX_LAPTOP_V1" in text
+    assert "FALABELLA_LAPTOP_V1" in text
+    for commercial in ("Precio Lista", "Precio Base", "Fecha de Inicio", "Fecha Fin", "Stock"):
+        assert commercial in text
+```
+
+- [ ] **Step 2: Run and verify failure**
+
+Run: `pytest tests/test_marketplace_template_seeds.py -v`
+
+Expected: FAIL.
+
+- [ ] **Step 3: Implement idempotent seeds**
+
+For Coolbox use the known `Laptops-All in one` header contract already represented in `coolbox_preview.py`; classify final commercial columns as `COMMERCIAL`. For Falabella, read only field names already present in SCR `channels/falabella.py`, `channels/falabella_categories.py` and related tests; do not invent a field that is not represented by current V8 contracts. Seed aliases such as `RAM`, `Memoria RAM`, `Capacidad RAM` → `ram_gb` where supported.
+
+- [ ] **Step 4: Run and commit**
+
 ```bash
-pytest tests/test_marketplace_template_seeds.py -q
+pytest tests/test_marketplace_template_seeds.py -v
 git add sql/010_seed_marketplace_templates_v2.sql tests/test_marketplace_template_seeds.py
 git commit -m "feat: seed Coolbox and Falabella Excel templates"
 ```
 
 ---
 
-## Task 9: Servicio coordinador Excel Template Engine
+### Task 5: Product-row extraction and template readiness
 
 **Files:**
+- Create: `src/stech_mcp/services/excel_product_rows.py`
+- Create: `src/stech_mcp/services/excel_template_validator.py`
 - Create: `src/stech_mcp/services/excel_template_service.py`
-- Create: `tests/test_excel_template_service.py`
+- Test: `tests/test_excel_product_rows.py`
+- Test: `tests/test_excel_template_validator.py`
+- Test: `tests/test_excel_template_service.py`
 
-**Step 1 — Prueba fallando**
+**Interfaces:**
+- Consumes: recognized template, mapped headers, Product Technical Status from Enrichment Core.
+- Produces `ExcelTemplateService.analyze_manifest(manifest: dict) -> dict`.
 
-`analyze_manifest()` debe devolver:
-- recognition;
-- product rows;
-- duplicates/errors;
-- template field mapping;
-- per-product readiness;
-- queue recommendation (`UP_TO_DATE`, `ENRICH_LIGHT`, `ENRICH_DEEP`, `REVIEW_TEMPLATE`).
+- [ ] **Step 1: Write failing row extraction test**
 
-No crear job automáticamente en análisis; la creación es acción explícita del usuario/V8.
+```python
+def test_rows_preserve_excel_row_and_dedupe_partnumber(extractor):
+    result = extractor.extract(template="COOLBOX_LAPTOP_V1", rows=[
+        {"row_number": 3, "Sku code ref": "pn1"},
+        {"row_number": 4, "Sku code ref": "PN1"},
+    ])
+    assert [x["partnumber"] for x in result["products"]] == ["PN1"]
+    assert result["duplicates"][0]["row_number"] == 4
+```
 
-**Step 2 — Implementar**
+Identifier column comes from template configuration. A marketplace SKU that is not configured as PN cannot be silently treated as PN.
 
-**Step 3 — Verify/commit**
+- [ ] **Step 2: Write failing validator test**
+
+```python
+def test_validator_reports_missing_by_scope(validator):
+    result = validator.validate("PN1", "COOLBOX_LAPTOP_V1")
+    assert "ram_gb" in result["missing_technical"]
+    assert "Stock" not in result["missing_technical"]
+    assert result["commercial_fields"]
+```
+
+- [ ] **Step 3: Implement extractor and validator**
+
+`validate()` returns `required_total`, `available_total`, `missing_technical`, `missing_identity`, `missing_content`, `commercial_fields`, `completion_pct`, `readiness_state`.
+
+- [ ] **Step 4: Write failing coordinator test**
+
+```python
+def test_analysis_never_creates_job(service, work_service, manifest):
+    result = service.analyze_manifest(manifest)
+    assert result["recognition"]
+    assert result["products"]
+    work_service.create_job.assert_not_called()
+```
+
+`analyze_manifest()` returns recognition + products + duplicates + unmapped columns + per-product readiness + recommendation `UP_TO_DATE`, `ENRICH_LIGHT`, `ENRICH_DEEP` or `REVIEW_TEMPLATE`.
+
+- [ ] **Step 5: Run and commit**
+
 ```bash
-pytest tests/test_excel_template_service.py -q
-git add src/stech_mcp/services/excel_template_service.py tests/test_excel_template_service.py
-git commit -m "feat: coordinate Excel recognition and readiness analysis"
+pytest tests/test_excel_product_rows.py tests/test_excel_template_validator.py tests/test_excel_template_service.py -v
+git add src/stech_mcp/services/excel_product_rows.py src/stech_mcp/services/excel_template_validator.py src/stech_mcp/services/excel_template_service.py tests/test_excel_product_rows.py tests/test_excel_template_validator.py tests/test_excel_template_service.py
+git commit -m "feat: analyze Excel products against Product Workspace"
 ```
 
 ---
 
-## Task 10: MCP tools para análisis/importación
+### Task 6: MCP tools, queue handoff, and export mapping
 
 **Files:**
 - Create: `src/stech_mcp/tools/excel_template.py`
-- Modify: `src/stech_mcp/server.py`
-- Create: `tests/test_server_excel_template_tools.py`
-
-**Tools iniciales:**
-- `excel_template_recognize(manifest)`
-- `excel_template_analyze(manifest)`
-- `excel_template_job_create(analysis_id or rows, priority=...)`
-
-`excel_template_job_create` debe terminar usando `ProductWorkService` y crear `ENRICH_TECHNICAL`, no una cola Excel paralela.
-
-**Step 1 — Pruebas fallando**
-
-Comprobar alta/media/baja confianza y que job creation deduplica PN.
-
-**Step 2 — Implementar**
-
-**Step 3 — Verify/commit**
-```bash
-pytest tests/test_server_excel_template_tools.py tests/test_server_product_work_tools.py -q
-git add src/stech_mcp/tools/excel_template.py src/stech_mcp/server.py tests/test_server_excel_template_tools.py
-git commit -m "feat: expose Excel template analysis through MCP"
-```
-
----
-
-## Task 11: Export mapping contract
-
-**Files:**
 - Create: `src/stech_mcp/services/marketplace_export_mapping.py`
-- Create: `tests/test_marketplace_export_mapping.py`
+- Modify: `src/stech_mcp/server.py` tool-registration section.
+- Test: `tests/test_server_excel_template_tools.py`
+- Test: `tests/test_marketplace_export_mapping.py`
+- Test: `tests/test_excel_template_engine_v2_integration.py`
 
-**Step 1 — Pruebas fallando**
+**Interfaces:**
+- Consumes: Task 5 analysis and ProductWorkService from Queue Plan.
+- Produces MCP tools `excel_template_recognize`, `excel_template_analyze`, `excel_template_job_create`, plus `MarketplaceExportMappingService.values_for(partnumber, template_code) -> dict`.
 
-Dado PN + template, producir valores para columnas desde Product Workspace manteniendo:
-- orden original del template;
-- columnas desconocidas/no administradas sin destrucción;
-- commercial values sin tocar salvo que otro flujo los provea;
-- transformación de unidad/enum específica del canal solo en mapper de salida.
+- [ ] **Step 1: Write failing tool registration test**
 
-**Step 2 — Implementar contrato**
-
-El archivo físico puede generarlo V8; MCP devuelve mapping/values y readiness.
-
-**Step 3 — Verify/commit**
-```bash
-pytest tests/test_marketplace_export_mapping.py -q
-git add src/stech_mcp/services/marketplace_export_mapping.py tests/test_marketplace_export_mapping.py
-git commit -m "feat: map canonical facts back to marketplace templates"
+```python
+def test_excel_tools_registered(tool_names):
+    assert {"excel_template_recognize", "excel_template_analyze", "excel_template_job_create"} <= set(tool_names)
 ```
 
----
+- [ ] **Step 2: Implement tools with confidence gate**
 
-## Task 12: Integración Excel → cola → Product Workspace → export
+`excel_template_job_create` accepts only a prior analysis/result with recognition state `RECOGNIZED` and confidence band `HIGH`, or `MEDIUM` with `user_confirmed_template=True`. `LOW` and `AMBIGUOUS` raise `TEMPLATE_CONFIRMATION_REQUIRED`. It calls `ProductWorkService.create_job(... work_type="ENRICH_TECHNICAL" ...)` and never creates Excel-specific queue tables.
 
-**Files:**
-- Create: `tests/test_excel_template_engine_v2_integration.py`
+- [ ] **Step 3: Write failing export mapping test**
 
-**Scenario:** workbook Coolbox/Falabella generado en test con 3 PNs:
-- PN A completo;
-- PN B con 3 faltantes;
-- PN C con conflicto.
+```python
+def test_export_mapping_preserves_commercial_columns(service):
+    result = service.values_for("PN1", "COOLBOX_LAPTOP_V1")
+    assert result["values"]["Memoria RAM"] == "16 GB"
+    assert result["values"]["Stock"] is None
+    assert result["write_policy"]["Stock"] == "PRESERVE_EXISTING"
+```
 
-Assertions:
-- template reconocido por headers aunque filename sea genérico;
-- PN A = up to date;
-- PN B genera enrichment solo para faltantes;
-- PN C requiere review;
-- job usa cola genérica;
-- después de enriquecer, export mapping completa campos técnicos;
-- price/stock originales no se modifican.
+Physical workbook writing stays outside MCP.
 
-Run:
+- [ ] **Step 4: Implement export mapping**
+
+Map canonical facts to channel headers and channel units/enums. Unknown/unmanaged and `COMMERCIAL` columns return `PRESERVE_EXISTING`.
+
+- [ ] **Step 5: Write final integration test**
+
+Generate a workbook manifest with three PNs: complete, missing three technical fields, and conflict. Assert structure-based recognition, deduped queue handoff, only missing fields requested, and export mapping does not change price/stock.
+
+- [ ] **Step 6: Run focused and full tests**
+
 ```bash
-pytest tests/test_excel_template_engine_v2_integration.py -q
+pytest tests/test_server_excel_template_tools.py tests/test_marketplace_export_mapping.py tests/test_excel_template_engine_v2_integration.py -v
 pytest -q
 ```
+
 Expected: PASS.
 
-Commit:
+- [ ] **Step 7: Commit**
+
 ```bash
-git add tests/test_excel_template_engine_v2_integration.py
-git commit -m "test: validate Excel template enrichment flow"
+git add src/stech_mcp/tools/excel_template.py src/stech_mcp/services/marketplace_export_mapping.py src/stech_mcp/server.py tests/test_server_excel_template_tools.py tests/test_marketplace_export_mapping.py tests/test_excel_template_engine_v2_integration.py
+git commit -m "feat: complete Excel template enrichment workflow"
 ```
 
 ## Definition of Done
 
-- Reconocimiento no depende del nombre del archivo.
-- Cambios menores de headers/orden no rompen la detección.
-- Ambigüedad se muestra, no se adivina.
-- PN/SKU se detecta por contrato del template.
-- Campos Excel se mapean a facts canónicos.
-- Price/stock son COMMERCIAL y quedan fuera del enrichment técnico.
-- Falabella y Coolbox son templates pares.
-- Importación usa la misma cola `product_work_job`.
-- Export puede reconstruir la plantilla desde Product Workspace sin convertir el Excel en master.
-- Suite completa verde.
+- Excel recognition uses structure, aliases and explainable scoring, never filename alone.
+- Coolbox/Falabella initial templates are registered as peers.
+- Medium/low/ambiguous recognition is safely gated.
+- PN extraction is explicit and deduplicated.
+- Technical missing fields are calculated from Product Workspace.
+- Commercial columns are preserved and excluded from technical enrichment.
+- Import uses the generic Product Work Queue.
+- Export mapping can repopulate channel fields without making Excel the master.
+- Full MCP test suite passes.
