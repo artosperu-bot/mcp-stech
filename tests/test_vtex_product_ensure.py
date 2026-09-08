@@ -76,8 +76,9 @@ def test_client_exposes_minimal_classic_catalog_product_and_sku_crud_helpers():
 
 
 class FakeVtexClient:
-    def __init__(self, seller_product=None):
+    def __init__(self, seller_product=None, fail_sku_create=False):
         self.seller_product = seller_product
+        self.fail_sku_create = fail_sku_create
         self.calls = []
         self.product_id = None
         self.sku_id = None
@@ -115,6 +116,13 @@ class FakeVtexClient:
 
     def create_sku(self, payload):
         self.calls.append(("create_sku", dict(payload)))
+        if self.fail_sku_create:
+            raise VtexImageApiError(
+                operation="create_sku",
+                status=500,
+                body="temporary failure",
+                url="https://example.invalid/sku",
+            )
         self.sku_id = 500
         return {"Id": 500, "RefId": payload["RefId"], "ProductId": payload["ProductId"]}
 
@@ -220,4 +228,46 @@ def test_ensure_detects_product_created_sku_missing_and_only_creates_sku():
     assert result["product_created"] is False
     assert result["sku_created"] is True
     assert not any(call[0] == "create_product" for call in client.calls)
+    assert any(call[0] == "create_sku" for call in client.calls)
+
+
+def test_partial_create_returns_verified_product_id_when_sku_write_fails():
+    client = FakeVtexClient(seller_product=None, fail_sku_create=True)
+    service = VtexProductEnsureService(client)
+
+    result = service.ensure(
+        "NEW-001",
+        {"product_name": "Producto nuevo"},
+        category_id=65,
+        brand_id=27,
+    )
+
+    assert result["status"] == "PARTIAL_CREATED"
+    assert result["product_created"] is True
+    assert result["sku_created"] is False
+    assert result["product_id"] == 400
+    assert result["product_ref_id"] == "NEW-001"
+    assert result["read_back_verified"] is False
+    assert result["blocking_reasons"] == ["VTEX_SKU_CREATE_FAILED"]
+
+
+def test_retry_can_use_persisted_product_id_without_waiting_for_seller_portal_index():
+    client = FakeVtexClient(seller_product=None)
+    service = VtexProductEnsureService(client)
+
+    result = service.ensure(
+        "NEW-001",
+        {"product_name": "Producto nuevo"},
+        category_id=65,
+        brand_id=27,
+        known_product_id=400,
+    )
+
+    assert result["status"] == "CREATED"
+    assert result["product_created"] is False
+    assert result["sku_created"] is True
+    assert result["product_id"] == 400
+    assert not any(call[0] == "lookup_product" for call in client.calls)
+    assert not any(call[0] == "create_product" for call in client.calls)
+    assert any(call[0] == "get_product" for call in client.calls)
     assert any(call[0] == "create_sku" for call in client.calls)
