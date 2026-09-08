@@ -1,451 +1,585 @@
-# Product Enrichment Core V2 — Implementation Plan
+# Product Enrichment Core V2 Implementation Plan
 
-> **Para Steve:** REQUIRED SUB-SKILL: ejecutar con `superpowers:subagent-driven-development` o `superpowers:executing-plans`, con TDD y commits pequeños.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** construir el motor técnico canónico que toma un PN, reutiliza Deltron + datos aprobados, detecta únicamente campos faltantes/conflictivos, obtiene evidencia web/documental, valida candidatos y promueve hechos seguros a Product Workspace sin tocar precio ni stock.
+**Goal:** Build the channel-neutral technical enrichment engine that reuses Deltron/current facts, researches only missing or conflicting fields, stores source evidence, validates exact Part Number rules, and promotes safe canonical facts into Product Workspace.
 
-**Architecture:** category schemas definen qué atributos existen; adapters convierten fuentes a campos canónicos; research produce candidatos, nunca escribe directo; validación/promotion reutiliza `source_policy.py`, `product_field_verification.py` y `enrichment_repository.py`; el handler `ENRICH_TECHNICAL` conecta el motor con el worker del Plan A.
+**Architecture:** Category schemas define canonical facts; Deltron/web/PDF adapters only produce candidates. `FactPromotionService` is the only path from research candidates to approved `product_enrichment`, and it reuses the existing source policy/field verification rules. The worker from Plan A calls one `ENRICH_TECHNICAL` handler per product.
 
-**Tech Stack:** Python 3.12, SQL Server/pyodbc, httpx, pypdf, pytest; servicios existentes de Product Workspace.
+**Tech Stack:** Python 3.12, SQL Server 2019, pyodbc, httpx, pypdf, Brave Search API, pytest.
+
+**Spec:** `docs/superpowers/specs/2026-09-08-product-enrichment-engine-v2-design.md`
+
+## Global Constraints
+
+- `ENRICH_TECHNICAL` MUST NOT update price or stock.
+- Canonical facts live in `product_enrichment`/evidence, not hardcoded marketplace columns.
+- Initial supported category schemas are exactly `LAPTOP`, `PORTABLE_SPEAKER`, `HEADPHONES`.
+- Variant-sensitive facts require exact Part Number for automatic promotion.
+- Source priority stays A1 manufacturer exact PN, A2 official document/support exact PN, B authorized distributor exact PN, C trusted retailer exact SKU/PN, D same model/chassis only for explicitly reusable facts, E deterministic approved rule.
+- HTML/PDF/search results never write directly to approved enrichment.
+- Automatic general web discovery uses Brave Search API endpoint `https://api.search.brave.com/res/v1/web/search` with `X-Subscription-Token` from `STECH_BRAVE_SEARCH_API_KEY`; no key is committed.
+- When the search key is absent, known URLs/documents may still be ingested, but unresolved missing fields finish `PARTIAL` with code `SEARCH_PROVIDER_NOT_CONFIGURED` rather than fabricated data.
 
 ---
 
-## Task 1: Schemas canónicos por categoría
+### Task 1: Canonical category schema registry
 
 **Files:**
 - Create: `sql/007_product_attribute_schema_v2.sql`
 - Create: `src/stech_mcp/domain/product_schema.py`
 - Create: `src/stech_mcp/db/product_schema_repository.py`
-- Create: `tests/test_product_schema_v2.py`
-- Create: `tests/test_product_schema_repository.py`
+- Test: `tests/test_product_schema_v2.py`
+- Test: `tests/test_product_schema_repository.py`
 
-**Step 1 — Pruebas fallando**
+**Interfaces:**
+- Consumes: STECH_MCP database connection factory.
+- Produces:
+  - `ProductAttributeDefinition(field_code, value_type, unit, variant_sensitive, reuse_policy)`
+  - `CategoryAttribute(category_code, field_code, requirement, ordinal)`
+  - `ProductSchemaRepository.get_category_schema(category_code: str) -> list[CategoryAttribute]`
 
-Exigir tablas `product_attribute_definition` y `category_attribute`, con `field_code`, tipo, unidad, required/recommended, variant_sensitive, reuse_policy y orden.
+- [ ] **Step 1: Write the failing schema test**
 
-Seed inicial mínimo:
-- `LAPTOP`
-- `PORTABLE_SPEAKER`
-- `HEADPHONES`
+```python
+from pathlib import Path
 
-Probar que un category schema devuelve required/recommended ordenados y que campos sensibles a variante quedan marcados.
 
-Run:
-```bash
-pytest tests/test_product_schema_v2.py tests/test_product_schema_repository.py -q
+def test_attribute_schema_sql_contains_initial_categories():
+    text = Path("sql/007_product_attribute_schema_v2.sql").read_text(encoding="utf-8")
+    for value in ("product_attribute_definition", "category_attribute", "LAPTOP", "PORTABLE_SPEAKER", "HEADPHONES"):
+        assert value in text
 ```
-Expected: FAIL.
 
-**Step 2 — Implementar**
+- [ ] **Step 2: Run and verify failure**
 
-No agregar todos estos atributos como columnas de `product_master`; son facts canónicos variables.
+Run: `pytest tests/test_product_schema_v2.py -v`
 
-**Step 3 — Verificar y commit**
+Expected: FAIL because SQL/module do not exist.
+
+- [ ] **Step 3: Implement schema and Python models**
+
+Use requirement enum exactly `REQUIRED`/`RECOMMENDED`. Seed at least these canonical field codes:
+
+```python
+LAPTOP = {"cpu_model", "ram_gb", "storage_gb", "storage_type", "screen_inches", "resolution", "wifi", "bluetooth_version", "battery_wh", "weight_kg", "dimensions_mm", "os_name"}
+PORTABLE_SPEAKER = {"speaker_power_w", "bluetooth_version", "battery_runtime_hours", "battery_capacity_wh", "ip_rating", "frequency_response_hz", "weight_kg", "dimensions_mm", "box_contents"}
+HEADPHONES = {"driver_size_mm", "anc", "transparency_mode", "bluetooth_version", "codec", "microphone", "battery_runtime_hours", "charging_time_hours", "impedance_ohm", "sensitivity_db", "frequency_response_hz", "weight_g"}
+```
+
+Mark CPU/RAM/storage/OS/color/battery-variant facts as variant-sensitive; generic dimensions/weight reuse is allowed only when schema policy explicitly says `SAME_CHASSIS_ALLOWED`.
+
+- [ ] **Step 4: Write repository test and implement repository**
+
+```python
+def test_repository_returns_required_fields_in_ordinal_order(repo):
+    schema = repo.get_category_schema("PORTABLE_SPEAKER")
+    required = [x.field_code for x in schema if x.requirement == "REQUIRED"]
+    assert required
+    assert schema == sorted(schema, key=lambda x: x.ordinal)
+```
+
+Follow existing repository connection/close patterns.
+
+- [ ] **Step 5: Run tests**
+
+Run: `pytest tests/test_product_schema_v2.py tests/test_product_schema_repository.py -v`
+
+Expected: PASS.
+
+- [ ] **Step 6: Commit**
+
 ```bash
-pytest tests/test_product_schema_v2.py tests/test_product_schema_repository.py -q
 git add sql/007_product_attribute_schema_v2.sql src/stech_mcp/domain/product_schema.py src/stech_mcp/db/product_schema_repository.py tests/test_product_schema_v2.py tests/test_product_schema_repository.py
-git commit -m "feat: add canonical category attribute schemas"
+git commit -m "feat: add canonical technical category schemas"
 ```
 
 ---
 
-## Task 2: Category Schema Service + MCP status
+### Task 2: Technical status and missing-field analyzer
 
 **Files:**
-- Create: `src/stech_mcp/services/product_schema_service.py`
 - Create: `src/stech_mcp/services/product_technical_status.py`
 - Create: `src/stech_mcp/tools/product_schema.py`
-- Modify: `src/stech_mcp/server.py`
-- Create: `tests/test_product_technical_status.py`
-- Create: `tests/test_server_product_schema_tools.py`
+- Modify: `src/stech_mcp/server.py` in existing tool-registration section.
+- Test: `tests/test_product_technical_status.py`
+- Test: `tests/test_server_product_schema_tools.py`
 
-**Step 1 — Prueba fallando**
+**Interfaces:**
+- Consumes: `ProductRepository.get_by_partnumber`, `EnrichmentRepository.get_approved`, Task 1 schema repository.
+- Produces:
+  - `ProductTechnicalStatusService.get(partnumber: str) -> dict`
+  - MCP `product_schema_get(category)` and `product_technical_status(partnumber)`.
 
-Exigir:
-- `product_schema_get(category)`;
-- `product_technical_status(partnumber)`;
-- cálculo `known_fields`, `missing_required`, `missing_recommended`, `conflicts`, `completion_pct`;
-- no incluir price/stock como technical fields.
+- [ ] **Step 1: Write failing status test**
 
-**Step 2 — Implementar**
+```python
+def test_status_returns_only_missing_technical_fields(service):
+    result = service.get("PN1")
+    assert result["category_code"] == "PORTABLE_SPEAKER"
+    assert result["known_fields"]["bluetooth_version"] == "5.4"
+    assert "speaker_power_w" in result["missing_required"]
+    assert "price" not in result["missing_required"]
+    assert "stock" not in result["missing_required"]
+```
 
-`product_technical_status` combina `ProductRepository`, `EnrichmentRepository` y schema; no investiga todavía.
+- [ ] **Step 2: Run and verify failure**
 
-**Step 3 — Verificar y commit**
+Run: `pytest tests/test_product_technical_status.py -v`
+
+Expected: FAIL.
+
+- [ ] **Step 3: Implement status calculation**
+
+Return exact keys:
+
+```python
+{
+    "partnumber": str,
+    "category_code": str,
+    "known_fields": dict[str, object],
+    "missing_required": list[str],
+    "missing_recommended": list[str],
+    "conflicts": list[dict],
+    "completion_pct": int,
+}
+```
+
+Existing approved facts override raw Deltron values only after source policy; raw source data remains available for candidate generation in Task 3.
+
+- [ ] **Step 4: Register MCP tools and test registration**
+
+```python
+def test_schema_tools_registered(tool_names):
+    assert {"product_schema_get", "product_technical_status"} <= set(tool_names)
+```
+
+- [ ] **Step 5: Run tests and commit**
+
 ```bash
-pytest tests/test_product_technical_status.py tests/test_server_product_schema_tools.py -q
-git add src/stech_mcp/services/product_schema_service.py src/stech_mcp/services/product_technical_status.py src/stech_mcp/tools/product_schema.py src/stech_mcp/server.py tests/test_product_technical_status.py tests/test_server_product_schema_tools.py
-git commit -m "feat: expose technical schema and missing fields"
+pytest tests/test_product_technical_status.py tests/test_server_product_schema_tools.py tests/test_server_smoke.py -v
+git add src/stech_mcp/services/product_technical_status.py src/stech_mcp/tools/product_schema.py src/stech_mcp/server.py tests/test_product_technical_status.py tests/test_server_product_schema_tools.py
+git commit -m "feat: detect missing canonical technical fields"
 ```
 
 ---
 
-## Task 3: Adapter Deltron → facts canónicos
+### Task 3: Deltron canonical fact adapter
 
 **Files:**
 - Create: `src/stech_mcp/services/deltron_fact_adapter.py`
-- Create: `tests/test_deltron_fact_adapter.py`
+- Create: `src/stech_mcp/services/fact_normalizers.py`
+- Test: `tests/test_deltron_fact_adapter.py`
+- Test: `tests/test_fact_normalizers.py`
 
-**Step 1 — Pruebas fallando**
+**Interfaces:**
+- Consumes: product V8 `atributos_json` / `especificaciones` already exposed by `ProductRepository`.
+- Produces `list[Evidence]`/candidate dicts with `field_code`, `raw_value`, `normalized_value`, `source_type="AUTHORIZED_DISTRIBUTOR"`, `source_name="DELTRON"`, `source_partnumber`.
 
-Con fixtures dict/JSON, probar mappings como RAM, almacenamiento, pantalla, Bluetooth, potencia, IP rating, dimensiones, peso y autonomía según categoría.
+- [ ] **Step 1: Write failing normalizer tests**
 
-Reglas:
-- preservar valor original + valor normalizado;
-- no mapear un label ambiguo sin regla explícita;
-- no enviar price/stock al enrichment técnico;
-- emitir candidate/evidence metadata con source `DELTRON`.
+```python
+def test_normalizes_common_units():
+    assert normalize_weight("1.65 kg") == {"value": 1.65, "unit": "kg"}
+    assert normalize_bluetooth("Bluetooth 5.4") == "5.4"
+    assert normalize_ip_rating("IP67 waterproof") == "IP67"
+```
 
-**Step 2 — Implementar registry de aliases/mappers**
+- [ ] **Step 2: Run and verify failure**
 
-Evitar un gran `if category == ...`; usar mapping declarativo por `field_code` y normalizadores reutilizables.
+Run: `pytest tests/test_fact_normalizers.py -v`
 
-**Step 3 — Verify/commit**
+Expected: FAIL.
+
+- [ ] **Step 3: Implement deterministic normalizers**
+
+Implement exact helpers for weight, dimensions, power, capacity, duration, Bluetooth, IP rating, frequency, RAM/storage and resolution. Return `None` when ambiguous instead of guessing.
+
+- [ ] **Step 4: Write failing adapter test**
+
+```python
+def test_adapter_excludes_commercial_fields(adapter):
+    candidates = adapter.adapt({
+        "partnumber": "PN1",
+        "precio": "99.00",
+        "stock": 12,
+        "atributos_json": {"especificaciones": {"Bluetooth": "5.4", "Potencia": "30 W"}},
+    }, category_code="PORTABLE_SPEAKER")
+    fields = {c["field_code"] for c in candidates}
+    assert fields == {"bluetooth_version", "speaker_power_w"}
+```
+
+- [ ] **Step 5: Implement declarative alias mapping**
+
+Store aliases by field code, not marketplace, e.g. `{"bluetooth_version": ("bluetooth", "versión bluetooth", "version bluetooth")}`. Do not import `coolbox_preview.py`.
+
+- [ ] **Step 6: Run tests and commit**
+
 ```bash
-pytest tests/test_deltron_fact_adapter.py -q
-git add src/stech_mcp/services/deltron_fact_adapter.py tests/test_deltron_fact_adapter.py
-git commit -m "feat: normalize Deltron specs into canonical facts"
+pytest tests/test_fact_normalizers.py tests/test_deltron_fact_adapter.py -v
+git add src/stech_mcp/services/fact_normalizers.py src/stech_mcp/services/deltron_fact_adapter.py tests/test_fact_normalizers.py tests/test_deltron_fact_adapter.py
+git commit -m "feat: normalize Deltron specs into canonical candidates"
 ```
 
 ---
 
-## Task 4: Documentos, hashes y candidatos persistentes
+### Task 4: Persistent documents and candidate evidence
 
 **Files:**
 - Create: `sql/008_product_research_evidence_v2.sql`
 - Create: `src/stech_mcp/db/source_document_repository.py`
 - Create: `src/stech_mcp/db/fact_candidate_repository.py`
-- Create: `tests/test_source_document_repository.py`
-- Create: `tests/test_fact_candidate_repository.py`
+- Test: `tests/test_source_document_repository.py`
+- Test: `tests/test_fact_candidate_repository.py`
 
-**Step 1 — Pruebas fallando**
+**Interfaces:**
+- Consumes: DB connection factory.
+- Produces:
+  - `SourceDocumentRepository.upsert_by_hash(...) -> dict`
+  - `SourceDocumentRepository.add_match(document_id, partnumber, match_type, pages, confidence) -> None`
+  - `FactCandidateRepository.add(...) -> dict`
+  - `FactCandidateRepository.list_for_product(partnumber) -> list[dict]`.
 
-Exigir:
-- `source_document` deduplicado por SHA-256/URL versionada;
-- `source_document_match` por PN con match exact/model/family;
-- `product_fact_candidate` con original/normalizado/unidad/source/source_partnumber/evidence/page/confidence/status;
-- múltiples evidencias pueden coexistir;
-- no sobrescribir candidatos silenciosamente.
+- [ ] **Step 1: Write failing SQL/repository tests**
 
-**Step 2 — Implementar SQL + repositorios**
+```python
+def test_same_sha_reuses_document(repo):
+    first = repo.upsert_by_hash(sha256="abc", url="https://example/a.pdf", document_type="PDF")
+    second = repo.upsert_by_hash(sha256="abc", url="https://example/copy.pdf", document_type="PDF")
+    assert first["source_document_id"] == second["source_document_id"]
 
-Estados candidate: `PENDING`, `VERIFIED`, `REJECTED`, `CONFLICT`, `PROMOTED`.
 
-**Step 3 — Verificar/commit**
+def test_candidates_keep_conflicting_evidence(candidate_repo):
+    candidate_repo.add(partnumber="PN1", field_code="bluetooth_version", normalized_value="5.4", confidence_rank="A1")
+    candidate_repo.add(partnumber="PN1", field_code="bluetooth_version", normalized_value="5.3", confidence_rank="B")
+    assert len(candidate_repo.list_for_product("PN1")) == 2
+```
+
+- [ ] **Step 2: Run and verify failure**
+
+Run: `pytest tests/test_source_document_repository.py tests/test_fact_candidate_repository.py -v`
+
+Expected: FAIL.
+
+- [ ] **Step 3: Implement SQL tables**
+
+Create `source_document`, `source_document_match`, `product_fact_candidate`. Candidate states exactly `PENDING`, `VERIFIED`, `REJECTED`, `CONFLICT`, `PROMOTED`. Store source URL, source PN, evidence text, page number, raw/normalized value, unit, source type, confidence rank and timestamps.
+
+- [ ] **Step 4: Implement repositories and run tests**
+
+Run: `pytest tests/test_source_document_repository.py tests/test_fact_candidate_repository.py -v`
+
+Expected: PASS.
+
+- [ ] **Step 5: Commit**
+
 ```bash
-pytest tests/test_source_document_repository.py tests/test_fact_candidate_repository.py -q
 git add sql/008_product_research_evidence_v2.sql src/stech_mcp/db/source_document_repository.py src/stech_mcp/db/fact_candidate_repository.py tests/test_source_document_repository.py tests/test_fact_candidate_repository.py
-git commit -m "feat: persist source documents and fact candidates"
+git commit -m "feat: persist reusable research evidence"
 ```
 
 ---
 
-## Task 5: Descarga HTML/PDF y extracción reutilizable
+### Task 5: HTML/PDF ingestion and Brave web discovery
 
 **Files:**
-- Modify: `pyproject.toml`
+- Modify: `pyproject.toml` dependency list.
+- Modify: `.env.example` search configuration section.
 - Create: `src/stech_mcp/http/source_client.py`
 - Create: `src/stech_mcp/services/source_document_service.py`
-- Create: `tests/test_source_client.py`
-- Create: `tests/test_source_document_service.py`
-
-**Step 1 — Pruebas fallando**
-
-Cubrir:
-- HTTP timeout, redirect, content-type, max bytes;
-- solo http/https;
-- hash SHA-256;
-- HTML → texto limpio;
-- PDF → texto por página;
-- segundo ingest del mismo documento reutiliza hash y no reprocesa;
-- error de PDF no invalida todo el job, queda evidencia de fallo controlado.
-
-**Step 2 — Dependencias**
-
-Agregar rangos compatibles:
-- `httpx>=0.28,<1`
-- `pypdf>=5,<7`
-
-No agregar browser automation al core.
-
-**Step 3 — Implementar**
-
-El servicio devuelve documento + páginas/texto, pero no promueve facts.
-
-**Step 4 — Verificar/commit**
-```bash
-pytest tests/test_source_client.py tests/test_source_document_service.py -q
-git add pyproject.toml src/stech_mcp/http/source_client.py src/stech_mcp/services/source_document_service.py tests/test_source_client.py tests/test_source_document_service.py
-git commit -m "feat: ingest and cache official HTML and PDF sources"
-```
-
----
-
-## Task 6: Research providers y plan dirigido a pending_fields
-
-**Files:**
-- Create: `src/stech_mcp/services/research/__init__.py`
-- Create: `src/stech_mcp/services/research/source_provider.py`
 - Create: `src/stech_mcp/services/research/search_provider.py`
+- Create: `src/stech_mcp/services/research/brave_search_provider.py`
 - Create: `src/stech_mcp/services/research/research_planner.py`
-- Create: `src/stech_mcp/services/research/manufacturer_provider.py`
-- Create: `src/stech_mcp/services/research/authorized_distributor_provider.py`
-- Create: `tests/test_research_planner.py`
-- Create: `tests/test_search_provider_contract.py`
+- Test: `tests/test_source_document_service.py`
+- Test: `tests/test_brave_search_provider.py`
+- Test: `tests/test_research_planner.py`
 
-**Step 1 — Pruebas fallando**
+**Interfaces:**
+- Consumes: `httpx`, `pypdf`, Task 4 repositories.
+- Produces:
+  - `SourceDocumentService.ingest(url: str, partnumber: str, source_type: str) -> dict`
+  - `SearchProvider.search(query: str, domains: tuple[str, ...] = (), limit: int = 5) -> list[SearchResult]`
+  - `ResearchPlanner.plan(partnumber, brand, category_code, pending_fields) -> list[ResearchQuery]`.
 
-El planner recibe PN, marca, categoría, `pending_fields` y fuentes ya probadas. Debe:
-- priorizar fabricante oficial;
-- priorizar documentos oficiales;
-- luego distribuidor autorizado;
-- no buscar fields ya verificados con evidencia suficiente;
-- limitar queries/fuentes por campo;
-- no aceptar resultado de otro PN para variant-sensitive fields.
+- [ ] **Step 1: Add failing dependency/config test**
 
-**Step 2 — Implementar interfaz SearchProvider**
+```python
+from pathlib import Path
 
-Contrato vendor-neutral: `search(query, domains=None, limit=...)`. Configuración externa; nunca incrustar API keys. Si no existe provider configurado, el motor puede ingerir URLs ya conocidas y terminar `PARTIAL`/`REVIEW_REQUIRED`, no inventar resultados.
 
-**Step 3 — Implementar providers**
+def test_research_dependencies_and_env_are_declared():
+    pyproject = Path("pyproject.toml").read_text(encoding="utf-8")
+    env = Path(".env.example").read_text(encoding="utf-8")
+    assert "httpx" in pyproject
+    assert "pypdf" in pyproject
+    assert "STECH_BRAVE_SEARCH_API_KEY" in env
+```
 
-Los providers transforman search results/documentos a `EvidenceCandidate`; no escriben a DB directamente.
+- [ ] **Step 2: Add exact dependencies/config**
 
-**Step 4 — Verificar/commit**
+Add `httpx>=0.28,<1` and `pypdf>=5,<7`. Add `STECH_BRAVE_SEARCH_API_KEY=` and `STECH_SEARCH_COUNTRY=PE`.
+
+- [ ] **Step 3: Write failing source-document tests**
+
+```python
+def test_pdf_is_extracted_per_page_and_reused(service, fake_http):
+    first = service.ingest("https://brand.example/spec.pdf", "PN1", "OFFICIAL_DOCUMENT")
+    second = service.ingest("https://brand.example/spec.pdf", "PN1", "OFFICIAL_DOCUMENT")
+    assert first["sha256"] == second["sha256"]
+    assert first["document_id"] == second["document_id"]
+    assert first["pages"][0]["text"]
+```
+
+Implement max response size 25 MB, connect/read timeout 15 seconds, redirects enabled, only `http`/`https`, and HTML text extraction without executing scripts.
+
+- [ ] **Step 4: Write failing Brave provider test**
+
+```python
+def test_brave_provider_sends_subscription_header(provider, http_mock):
+    provider.search('"PN1" specifications', domains=("manufacturer.example",), limit=5)
+    request = http_mock.last_request
+    assert request.url.path == "/res/v1/web/search"
+    assert request.headers["X-Subscription-Token"] == "secret"
+    assert request.url.params["country"] == "PE"
+```
+
+Use exact endpoint `https://api.search.brave.com/res/v1/web/search`, query params `q`, `count`, `country`, `search_lang`, and header `X-Subscription-Token`.
+
+- [ ] **Step 5: Write planner test and implement directed queries**
+
+```python
+def test_planner_only_queries_pending_fields(planner):
+    plan = planner.plan("PN1", "JBL", "PORTABLE_SPEAKER", ["ip_rating", "speaker_power_w"])
+    joined = " ".join(q.query for q in plan)
+    assert "PN1" in joined
+    assert "IP" in joined or "ip_rating" in joined
+    assert "RAM" not in joined
+```
+
+Generate at most 2 search queries per pending field and inspect at most 3 strong candidate sources per field. Search official manufacturer domains first when known; then official documents; then authorized distributors.
+
+- [ ] **Step 6: Run tests and commit**
+
 ```bash
-pytest tests/test_research_planner.py tests/test_search_provider_contract.py -q
-git add src/stech_mcp/services/research tests/test_research_planner.py tests/test_search_provider_contract.py
-git commit -m "feat: add directed technical research providers"
+pytest tests/test_source_document_service.py tests/test_brave_search_provider.py tests/test_research_planner.py -v
+git add pyproject.toml .env.example src/stech_mcp/http/source_client.py src/stech_mcp/services/source_document_service.py src/stech_mcp/services/research tests/test_source_document_service.py tests/test_brave_search_provider.py tests/test_research_planner.py
+git commit -m "feat: discover and ingest official product sources"
 ```
 
 ---
 
-## Task 7: Extracción de candidatos desde evidencia
+### Task 6: Candidate extraction, exact-PN validation, and promotion
 
 **Files:**
 - Create: `src/stech_mcp/services/fact_extractor.py`
-- Create: `src/stech_mcp/services/fact_normalizers.py`
-- Create: `tests/test_fact_extractor.py`
-- Create: `tests/test_fact_normalizers.py`
-
-**Step 1 — Pruebas fallando**
-
-Probar extractores determinísticos para patterns comunes: unidades, dimensiones, batería/autonomía, Bluetooth, IP rating, frecuencia, potencia, peso, RAM/storage, resolución.
-
-Cuando texto libre no sea seguro, producir `PENDING` candidate con evidencia en vez de adivinar.
-
-**Step 2 — Implementar**
-
-Separar parsing de normalización. Guardar siempre evidence snippet y document/page.
-
-**Step 3 — Verificar/commit**
-```bash
-pytest tests/test_fact_extractor.py tests/test_fact_normalizers.py -q
-git add src/stech_mcp/services/fact_extractor.py src/stech_mcp/services/fact_normalizers.py tests/test_fact_extractor.py tests/test_fact_normalizers.py
-git commit -m "feat: extract normalized candidates from source evidence"
-```
-
----
-
-## Task 8: Validación, conflictos y promoción
-
-**Files:**
-- Modify: `src/stech_mcp/services/product_field_verification.py`
-- Modify: `src/stech_mcp/domain/source_policy.py`
 - Create: `src/stech_mcp/services/fact_promotion.py`
-- Create: `tests/test_fact_promotion.py`
-- Extend: `tests/test_product_field_verification.py`
+- Modify: `src/stech_mcp/services/product_field_verification.py` source aliases only.
+- Modify: `src/stech_mcp/domain/source_policy.py` variant field registry only.
+- Test: `tests/test_fact_extractor.py`
+- Test: `tests/test_fact_promotion.py`
+- Modify: `tests/test_product_field_verification.py`
 
-**Step 1 — Pruebas fallando**
+**Interfaces:**
+- Consumes: ingested page text and candidate repository.
+- Produces:
+  - `FactExtractor.extract(document, target_fields, partnumber) -> list[dict]`
+  - `FactPromotionService.evaluate_and_promote(partnumber, candidates) -> dict`.
 
-Casos obligatorios:
-- A1 exact PN vence B/C conflictivo;
-- manual A2 exact PN válido;
-- otro PN no promueve RAM/SSD/CPU/color/battery variant-sensitive;
-- evidence débil no sobrescribe approved manual/A1;
-- conflicto irresoluble → `REVIEW_REQUIRED`;
-- todas las evidencias permanecen auditables;
-- promoción idempotente no duplica.
+- [ ] **Step 1: Write failing extractor test**
 
-**Step 2 — Implementar reutilizando reglas existentes**
+```python
+def test_extractor_returns_evidence_not_approved_fact(extractor):
+    items = extractor.extract(
+        {"url": "https://brand/spec", "pages": [{"page": 1, "text": "PN1 Bluetooth 5.4, IP67, 30 W"}]},
+        ["bluetooth_version", "ip_rating", "speaker_power_w"],
+        "PN1",
+    )
+    assert {x["normalized_value"] for x in items} >= {"5.4", "IP67"}
+    assert all(x["status"] == "PENDING" for x in items)
+    assert all(x["evidence_text"] for x in items)
+```
 
-No crear una segunda jerarquía de confianza. Extender aliases/source types solo cuando sea necesario.
+- [ ] **Step 2: Implement deterministic extractor**
 
-**Step 3 — Verificar/commit**
+Reuse Task 3 normalizers. If a target field cannot be extracted with a deterministic pattern, leave it missing; do not infer from nearby marketing language.
+
+- [ ] **Step 3: Write failing promotion policy tests**
+
+```python
+def test_exact_manufacturer_beats_authorized_distributor(promotion):
+    result = promotion.evaluate_and_promote("PN1", [
+        candidate("bluetooth_version", "5.3", rank="B", source_partnumber="PN1"),
+        candidate("bluetooth_version", "5.4", rank="A1", source_partnumber="PN1"),
+    ])
+    assert result["promoted"]["bluetooth_version"] == "5.4"
+
+
+def test_variant_sensitive_other_pn_is_rejected(promotion):
+    result = promotion.evaluate_and_promote("PN1", [
+        candidate("ram_gb", 16, rank="A1", source_partnumber="PN2"),
+    ])
+    assert "ram_gb" not in result["promoted"]
+    assert result["rejected"][0]["reason"] == "SOURCE_PARTNUMBER_MISMATCH"
+```
+
+Also test approved MANUAL/A1 cannot be overwritten by B/C and unresolved equal-strength conflict becomes `REVIEW_REQUIRED`.
+
+- [ ] **Step 4: Implement promotion through existing verification/repository path**
+
+Do not duplicate source ranking. Convert candidates into the existing verification evidence contract, call verification, then `EnrichmentRepository.upsert()` only for verified winners. Mark candidate rows `PROMOTED`, `REJECTED` or `CONFLICT`.
+
+- [ ] **Step 5: Run tests and commit**
+
 ```bash
-pytest tests/test_fact_promotion.py tests/test_product_field_verification.py -q
-git add src/stech_mcp/services/fact_promotion.py src/stech_mcp/services/product_field_verification.py src/stech_mcp/domain/source_policy.py tests/test_fact_promotion.py tests/test_product_field_verification.py
-git commit -m "feat: validate and promote technical facts by evidence strength"
+pytest tests/test_fact_extractor.py tests/test_fact_promotion.py tests/test_product_field_verification.py -v
+git add src/stech_mcp/services/fact_extractor.py src/stech_mcp/services/fact_promotion.py src/stech_mcp/services/product_field_verification.py src/stech_mcp/domain/source_policy.py tests/test_fact_extractor.py tests/test_fact_promotion.py tests/test_product_field_verification.py
+git commit -m "feat: validate and promote evidence-backed product facts"
 ```
 
 ---
 
-## Task 9: Orquestador de enriquecimiento por PN
+### Task 7: Product enrichment orchestrator and worker handler
 
 **Files:**
 - Create: `src/stech_mcp/services/product_enrichment_engine.py`
-- Create: `tests/test_product_enrichment_engine.py`
-
-**Step 1 — Pruebas fallando**
-
-Pipeline esperado:
-1. load source product;
-2. load approved facts;
-3. adapt Deltron;
-4. promote deterministic/strong existing candidates;
-5. calculate pending fields;
-6. research only pending/conflicts;
-7. ingest docs;
-8. extract candidates;
-9. validate/promote;
-10. recalculate status;
-11. rebuild Product Workspace/readiness.
-
-Probar producto completo: no web research. Producto parcial: solo 3 pending fields. Producto no encontrado: controlled `NO_DATA_FOUND`. Conflicto: `REVIEW_REQUIRED`.
-
-Asegurar spy/assertion de que no hay writes de price/stock.
-
-**Step 2 — Implementar**
-
-Retorno estructurado con `state`, `before`, `after`, `promoted_fields`, `remaining_fields`, `sources_consulted`, `conflicts`.
-
-**Step 3 — Verify/commit**
-```bash
-pytest tests/test_product_enrichment_engine.py -q
-git add src/stech_mcp/services/product_enrichment_engine.py tests/test_product_enrichment_engine.py
-git commit -m "feat: orchestrate missing-field technical enrichment"
-```
-
----
-
-## Task 10: Conectar ENRICH_TECHNICAL al worker
-
-**Files:**
-- Modify: `src/stech_mcp/services/product_work_dispatcher.py`
-- Create: `src/stech_mcp/services/handlers/enrich_technical.py`
 - Create: `src/stech_mcp/services/handlers/__init__.py`
-- Create: `tests/test_enrich_technical_handler.py`
+- Create: `src/stech_mcp/services/handlers/enrich_technical.py`
+- Modify: `src/stech_mcp/services/product_work_dispatcher.py` handler registration.
+- Test: `tests/test_product_enrichment_engine.py`
+- Test: `tests/test_enrich_technical_handler.py`
 
-**Step 1 — Pruebas fallando**
+**Interfaces:**
+- Consumes: Tasks 1–6 plus Product Work Queue Plan.
+- Produces:
+  - `ProductEnrichmentEngine.enrich(partnumber: str, category_code: str | None, requested_fields: list[str] | None, progress) -> dict`
+  - `EnrichTechnicalHandler.__call__(item: dict, progress) -> dict`.
 
-El handler mapea estados engine → work item:
-- completo → `COMPLETED`;
-- parcial con faltantes no críticos → `PARTIAL`;
-- conflicto/manual review → `REVIEW_REQUIRED`;
-- fuente temporal caída → `FAILED_RETRYABLE`;
-- error permanente → `FAILED`.
+- [ ] **Step 1: Write failing orchestrator tests**
 
-Debe actualizar `current_step`/progress durante las etapas.
+```python
+def test_complete_product_skips_web_search(engine, search_provider):
+    result = engine.enrich("PN-COMPLETE", "LAPTOP", None, lambda *_: None)
+    assert result["state"] == "COMPLETED"
+    search_provider.search.assert_not_called()
 
-**Step 2 — Implementar y registrar**
 
-**Step 3 — Verificar/commit**
-```bash
-pytest tests/test_enrich_technical_handler.py tests/test_product_work_worker.py -q
-git add src/stech_mcp/services/handlers src/stech_mcp/services/product_work_dispatcher.py tests/test_enrich_technical_handler.py
-git commit -m "feat: execute technical enrichment from persistent worker"
+def test_partial_product_searches_only_missing_fields(engine, planner):
+    result = engine.enrich("PN-PARTIAL", "PORTABLE_SPEAKER", None, lambda *_: None)
+    assert set(planner.last_pending_fields) == {"ip_rating", "speaker_power_w"}
+    assert set(result["remaining_fields"]) <= {"ip_rating", "speaker_power_w"}
 ```
 
----
+- [ ] **Step 2: Implement pipeline in exact order**
 
-## Task 11: Readiness multicanal desde ficha maestra
-
-**Files:**
-- Modify: `src/stech_mcp/services/product_readiness.py`
-- Modify: `src/stech_mcp/services/marketplace_preview.py`
-- Create: `tests/test_multichannel_readiness_v2.py`
-
-**Step 1 — Pruebas fallando**
-
-Para el mismo PN devolver readiness separado por `FALABELLA`, `COOLBOX`, `VTEX`, sin que uno cambie la ficha maestra de otro.
-
-**Step 2 — Implementar**
-
-Mantener compatibilidad con consumidores actuales; agregar contrato V2, no romper previews existentes.
-
-**Step 3 — Verificar/commit**
-```bash
-pytest tests/test_multichannel_readiness_v2.py tests/test_product_readiness.py tests/test_marketplace_preview.py -q
-git add src/stech_mcp/services/product_readiness.py src/stech_mcp/services/marketplace_preview.py tests/test_multichannel_readiness_v2.py
-git commit -m "feat: calculate channel-neutral product readiness"
+```text
+LOAD_SOURCE_DATA
+→ adapt Deltron candidates
+→ validate/promote safe existing candidates
+→ ANALYZE_MISSING_FIELDS
+→ if none: rebuild/readiness and complete
+→ RESEARCH missing/conflicts only
+→ ingest HTML/PDF
+→ extract candidates
+→ VALIDATE/PROMOTE
+→ recalculate missing/conflicts
+→ REBUILD_PRODUCT_MASTER
 ```
 
----
+Return exact keys `state`, `before`, `after`, `promoted_fields`, `remaining_fields`, `conflicts`, `sources_consulted`, `error_code`.
 
-## Task 12: Herramientas MCP de investigación y auditoría
+- [ ] **Step 3: Write handler state mapping test**
 
-**Files:**
-- Create: `src/stech_mcp/tools/product_research.py`
-- Modify: `src/stech_mcp/server.py`
-- Create: `tests/test_server_product_research_tools.py`
-
-**Tools:**
-- `product_technical_missing_list`
-- `product_research_plan`
-- `product_source_ingest`
-- `product_fact_candidates`
-- `product_fact_promote`
-- `product_fact_promote_batch`
-
-**Step 1 — Pruebas fallando**
-
-Validar inputs y que ninguna tool permite promoción sin pasar política de verificación.
-
-**Step 2 — Implementar**
-
-**Step 3 — Verificar/commit**
-```bash
-pytest tests/test_server_product_research_tools.py tests/test_server_smoke.py -q
-git add src/stech_mcp/tools/product_research.py src/stech_mcp/server.py tests/test_server_product_research_tools.py
-git commit -m "feat: expose technical research audit tools"
+```python
+def test_handler_maps_engine_review_to_queue_review(handler, engine):
+    engine.enrich.return_value = {"state": "REVIEW_REQUIRED", "conflicts": [{"field_code": "battery_wh"}]}
+    result = handler({"partnumber": "PN1", "input": {"category_code": "LAPTOP"}}, lambda *_: None)
+    assert result["status"] == "REVIEW_REQUIRED"
 ```
 
----
+Map temporary HTTP/search failures to `FAILED_RETRYABLE`; permanent invalid PN to `NO_DATA_FOUND` or `FAILED`; conflicts to `REVIEW_REQUIRED`; incomplete no-source results to `PARTIAL`.
 
-## Task 13: Integración controlada de 3 categorías
+- [ ] **Step 4: Register handler and run tests**
 
-**Files:**
-- Create: `tests/test_product_enrichment_v2_integration.py`
-- Modify only as failures reveal genuine gaps.
+Run: `pytest tests/test_product_enrichment_engine.py tests/test_enrich_technical_handler.py tests/test_product_work_worker.py -v`
 
-**Scenario:**
-- LAPTOP con mayoría de datos Deltron;
-- PORTABLE_SPEAKER con PDF oficial;
-- HEADPHONES con conflicto distribuidor vs fabricante.
-
-**Assertions:**
-- solo pending fields se investigan;
-- exact PN enforced;
-- documents reused by hash;
-- candidates/evidence auditables;
-- correct promotion/conflict;
-- Product Workspace updated;
-- price/stock unchanged.
-
-Run:
-```bash
-pytest tests/test_product_enrichment_v2_integration.py -q
-pytest -q
-```
 Expected: PASS.
 
-Commit:
+- [ ] **Step 5: Commit**
+
 ```bash
-git add tests/test_product_enrichment_v2_integration.py
-git commit -m "test: validate Product Enrichment Engine V2 end to end"
+git add src/stech_mcp/services/product_enrichment_engine.py src/stech_mcp/services/handlers src/stech_mcp/services/product_work_dispatcher.py tests/test_product_enrichment_engine.py tests/test_enrich_technical_handler.py
+git commit -m "feat: execute technical enrichment from product worker"
+```
+
+---
+
+### Task 8: Multichannel readiness and MCP audit tools
+
+**Files:**
+- Modify: `src/stech_mcp/services/product_readiness.py` channel readiness calculation.
+- Modify: `src/stech_mcp/services/marketplace_preview.py` generic channel contract.
+- Create: `src/stech_mcp/tools/product_research.py`
+- Modify: `src/stech_mcp/server.py` tool registration.
+- Test: `tests/test_multichannel_readiness_v2.py`
+- Test: `tests/test_server_product_research_tools.py`
+- Test: `tests/test_product_enrichment_v2_integration.py`
+
+**Interfaces:**
+- Consumes: approved canonical facts and marketplace field requirements.
+- Produces MCP tools `product_technical_missing_list`, `product_research_plan`, `product_source_ingest`, `product_fact_candidates`, `product_fact_promote`, `product_fact_promote_batch` plus readiness keyed by channel.
+
+- [ ] **Step 1: Write failing readiness test**
+
+```python
+def test_same_master_has_independent_channel_readiness(service):
+    result = service.get("PN1")
+    assert set(result["channels"]) >= {"FALABELLA", "COOLBOX", "VTEX"}
+    assert result["channels"]["FALABELLA"]["completion_pct"] != result["channels"]["COOLBOX"]["completion_pct"]
+```
+
+- [ ] **Step 2: Implement channel-neutral readiness**
+
+Readiness may differ because templates require different fields, but no channel writes back a different canonical fact.
+
+- [ ] **Step 3: Write MCP audit tool registration test**
+
+```python
+def test_research_audit_tools_registered(tool_names):
+    required = {"product_technical_missing_list", "product_research_plan", "product_source_ingest", "product_fact_candidates", "product_fact_promote"}
+    assert required <= set(tool_names)
+```
+
+Promotion tools must call `FactPromotionService`, never direct repository writes.
+
+- [ ] **Step 4: Write final three-category integration test**
+
+Use deterministic fake HTTP/search fixtures for LAPTOP, PORTABLE_SPEAKER and HEADPHONES. Assert only pending fields researched, documents reused by SHA, exact PN enforced, conflicts preserved, Product Workspace updated and before/after price/stock snapshots equal.
+
+- [ ] **Step 5: Run focused and full suites**
+
+```bash
+pytest tests/test_multichannel_readiness_v2.py tests/test_server_product_research_tools.py tests/test_product_enrichment_v2_integration.py -v
+pytest -q
+```
+
+Expected: PASS.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/stech_mcp/services/product_readiness.py src/stech_mcp/services/marketplace_preview.py src/stech_mcp/tools/product_research.py src/stech_mcp/server.py tests/test_multichannel_readiness_v2.py tests/test_server_product_research_tools.py tests/test_product_enrichment_v2_integration.py
+git commit -m "feat: complete multichannel technical enrichment core"
 ```
 
 ## Definition of Done
 
-- Category schemas no dependen de Coolbox.
-- Deltron alimenta facts canónicos, no columnas marketplace.
-- Se investiga únicamente lo faltante/conflictivo.
-- HTML/PDF se guarda y reutiliza por hash.
-- Extractores producen candidatos, no escrituras directas.
-- Fuente/PN/evidencia/confianza quedan persistidos.
-- Conflictos se resuelven por política o pasan a revisión.
-- Worker puede ejecutar `ENRICH_TECHNICAL`.
-- Product Workspace se actualiza progresivamente.
-- Falabella/Coolbox/VTEX tienen readiness independiente.
-- Precio y stock permanecen fuera del flujo técnico.
-- Suite completa verde.
+- Product schemas are channel-neutral.
+- Deltron, HTML, PDF and search produce candidates/evidence only.
+- Brave discovery is configured externally and exact-PN/source policy is enforced.
+- Only missing/conflicting fields are researched.
+- Documents are cached/reused by hash.
+- Facts promote through one verification path.
+- Worker processes `ENRICH_TECHNICAL` and Product Workspace updates progressively.
+- Falabella/Coolbox/VTEX readiness is independent.
+- Price and stock are unchanged.
+- Full MCP test suite passes.
