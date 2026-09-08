@@ -17,8 +17,12 @@ _TECHNICAL_INPUT_KEYS = {
 
 
 class ProductWorkService:
-    def __init__(self, repository: Any):
+    def __init__(self, repository: Any, *, max_attempts: int = 3):
+        normalized_max_attempts = int(max_attempts)
+        if not 1 <= normalized_max_attempts <= 10:
+            raise ValueError("max_attempts must be between 1 and 10")
         self.repository = repository
+        self.max_attempts = normalized_max_attempts
 
     def create_job(
         self,
@@ -80,6 +84,7 @@ class ProductWorkService:
             source_name=str(source_name or "").strip() or "MCP",
             actor_source=str(actor_source or "").strip() or "MCP",
             priority=int(priority),
+            max_attempts=self.max_attempts,
             items=items,
         )
 
