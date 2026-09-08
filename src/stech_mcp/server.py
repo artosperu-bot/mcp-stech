@@ -13,6 +13,7 @@ from stech_mcp.db.enrichment_repository import EnrichmentRepository
 from stech_mcp.db.image_publication_repository import ImagePublicationRepository
 from stech_mcp.db.packaging_rule_repository import PackagingRuleRepository
 from stech_mcp.db.product_image_repository import ProductImageRepository
+from stech_mcp.db.product_loader_repository import ProductLoaderRepository
 from stech_mcp.db.product_master_repository import ProductMasterRepository
 from stech_mcp.db.product_repository import ProductRepository
 from stech_mcp.domain.packaging_resolver import resolve_package
@@ -24,11 +25,15 @@ from stech_mcp.services.local_image_sync import LocalImageSyncService
 from stech_mcp.services.marketplace_preview import build_marketplace_preview
 from stech_mcp.services.product_approval import ProductApprovalService
 from stech_mcp.services.product_field_verification import ProductFieldVerificationService
+from stech_mcp.services.product_image_editor import ProductImageEditor
 from stech_mcp.services.product_images import normalize_deltron_images
+from stech_mcp.services.product_loader_orchestrator import ProductLoaderOrchestrator
+from stech_mcp.services.product_loader_preview import preview_product_rows
 from stech_mcp.services.product_prepare import ProductPrepareService
 from stech_mcp.services.vtex_image_batch import VtexImageBatchService
 from stech_mcp.services.vtex_image_client import VtexImageClient
 from stech_mcp.services.vtex_image_sync import VtexImageSyncService
+from stech_mcp.services.vtex_product_ensure import VtexProductEnsureService
 from stech_mcp.tools.core import health_snapshot
 
 settings = Settings()
@@ -40,6 +45,7 @@ enrichment_repository = EnrichmentRepository(mcp_connection_factory)
 packaging_rule_repository = PackagingRuleRepository(mcp_connection_factory)
 product_master_repository = ProductMasterRepository(mcp_connection_factory)
 product_image_repository = ProductImageRepository(mcp_connection_factory)
+product_loader_repository = ProductLoaderRepository(mcp_connection_factory)
 image_publication_repository = ImagePublicationRepository(mcp_connection_factory)
 local_image_sync_service = LocalImageSyncService(
     root=settings.stech_image_root,
@@ -80,6 +86,16 @@ vtex_image_sync_service = VtexImageSyncService(
 vtex_image_batch_service = VtexImageBatchService(
     root=settings.stech_image_root,
     sync_service=vtex_image_sync_service,
+)
+product_image_editor = ProductImageEditor(product_image_repository)
+vtex_product_ensure_service = VtexProductEnsureService(vtex_image_client)
+product_loader_orchestrator = ProductLoaderOrchestrator(
+    repository=product_loader_repository,
+    prepare_service=product_prepare_service,
+    local_image_sync_service=local_image_sync_service,
+    vtex_ensure_service=vtex_product_ensure_service,
+    vtex_image_sync_service=vtex_image_sync_service,
+    default_account_code="VTEX_STECH",
 )
 
 mcp = MCPServer("STECH MCP")
@@ -528,7 +544,123 @@ def vtex_images_sync_batch(
     )
 
 
+@mcp.tool()
+def product_loader_preview(rows: list[dict[str, Any]], source_name: str = "SCR") -> dict[str, Any]:
+    """Valida filas normalizadas del Product Workbench sin escribir SQL remoto ni VTEX."""
+    return preview_product_rows(rows, source_name)
+
+
+@mcp.tool()
+def product_loader_start(
+    rows: list[dict[str, Any]],
+    source_name: str,
+    actor_source: str = "SCR_UI",
+) -> dict[str, Any]:
+    """Inicia un job persistente después de validar el preview; no activa ni publica precio/stock."""
+    preview = preview_product_rows(rows, source_name)
+    if preview.get("has_blocking_errors"):
+        return {
+            "started": False,
+            "status": "VALIDATION_FAILED",
+            "preview": preview,
+        }
+    job = product_loader_orchestrator.start(
+        list(preview.get("rows") or []),
+        source_name,
+        actor_source=actor_source,
+        channel="VTEX",
+    )
+    return {"started": True, **job}
+
+
+@mcp.tool()
+def product_loader_job_get(job_id: int) -> dict[str, Any]:
+    """Lee estado, items y eventos de un Product Loader job persistente."""
+    job = product_loader_orchestrator.get_job(int(job_id))
+    return {"found": job is not None, "job": job}
+
+
+@mcp.tool()
+def product_loader_retry_item(job_id: int, item_id: int) -> dict[str, Any]:
+    """Reintenta solo un item terminal/revisable sin recrear identidades VTEX ya confirmadas."""
+    job = product_loader_orchestrator.retry_item(int(job_id), int(item_id))
+    return {"found": True, "job": job}
+
+
+@mcp.tool()
+def vtex_product_ensure(partnumber: str, category_id: int, brand_id: int) -> dict[str, Any]:
+    """Asegura Product/SKU exactos e inactivos; no publica precio, stock ni activación."""
+    normalized = str(partnumber or "").strip().upper()
+    if vtex_image_client is None:
+        return {
+            "found": True,
+            "partnumber": normalized,
+            "status": "ERROR",
+            "reason": "vtex_credentials_not_configured",
+            "read_back_verified": False,
+        }
+    master = product_master_repository.get(normalized)
+    if master is None:
+        prepared = product_prepare_service.prepare(normalized)
+        if not prepared.get("found"):
+            return {"found": False, "partnumber": normalized, "status": "SOURCE_PRODUCT_NOT_FOUND"}
+        master = dict(prepared.get("product_master") or {})
+    result = vtex_product_ensure_service.ensure(
+        normalized,
+        master,
+        category_id=int(category_id),
+        brand_id=int(brand_id),
+    )
+    return {"found": True, "partnumber": normalized, **result}
+
+
+@mcp.tool()
+def product_image_approve(product_image_id: int, approved: bool = True) -> dict[str, Any]:
+    """Aprueba o desaprueba metadata de una imagen sin borrar el archivo ORIGINAL."""
+    return product_image_editor.approve(int(product_image_id), bool(approved))
+
+
+@mcp.tool()
+def product_image_reorder(partnumber: str, ordered_ids: list[int]) -> dict[str, Any]:
+    """Reordena el conjunto completo de imágenes del PN; la posición 1 queda como principal."""
+    normalized = str(partnumber or "").strip().upper()
+    rows = product_image_editor.reorder(normalized, [int(value) for value in ordered_ids])
+    return {"found": True, "partnumber": normalized, "images": rows}
+
+
+@mcp.tool()
+def product_image_variant_register(
+    parent_image_id: int,
+    storage_path: str,
+    sha256_hash: str,
+    width_px: int,
+    height_px: int,
+    format: str,
+    variant_type: str = "EDITED_STECH",
+) -> dict[str, Any]:
+    """Registra una variante hija editada conservando intacta la imagen ORIGINAL."""
+    return product_image_editor.register_variant(
+        parent_image_id=int(parent_image_id),
+        storage_path=storage_path,
+        sha256_hash=sha256_hash,
+        width_px=int(width_px),
+        height_px=int(height_px),
+        format=format,
+        variant_type=variant_type,
+    )
+
+
+def _resume_product_loader_jobs() -> int:
+    try:
+        return int(product_loader_orchestrator.resume_pending())
+    except Exception:
+        # La migración puede no haberse aplicado aún durante un despliegue.
+        # El health y las demás herramientas deben seguir disponibles.
+        return 0
+
+
 def main() -> None:
+    _resume_product_loader_jobs()
     if settings.mcp_transport == "stdio":
         mcp.run()
         return
