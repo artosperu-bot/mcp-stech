@@ -126,18 +126,32 @@ class ProductLoaderOrchestrator:
                 return
 
             item = self._transition(item, "VTEX_CHECK")
-            ensure = self.vtex_ensure_service.ensure(
-                partnumber,
-                master,
-                category_id=row.get("vtex_category_id") or 0,
-                brand_id=row.get("vtex_brand_id") or 0,
-            )
+            ensure_kwargs: dict[str, Any] = {
+                "category_id": row.get("vtex_category_id") or 0,
+                "brand_id": row.get("vtex_brand_id") or 0,
+            }
+            if item.get("product_id_vtex") is not None:
+                ensure_kwargs["known_product_id"] = item.get("product_id_vtex")
+            ensure = self.vtex_ensure_service.ensure(partnumber, master, **ensure_kwargs)
             ensure_status = str(ensure.get("status") or "").upper()
             if ensure_status == "REVIEW_REQUIRED":
                 self._transition(
                     item,
                     "REVIEW_REQUIRED",
                     error_code="VTEX_DATA_REQUIRED",
+                    error_detail=", ".join(ensure.get("blocking_reasons") or [])[:1800],
+                    completed=True,
+                    detail={"ensure": ensure},
+                )
+                return
+            if ensure_status == "PARTIAL_CREATED":
+                self._transition(
+                    item,
+                    "FAILED",
+                    product_id_vtex=ensure.get("product_id"),
+                    product_ref_id_vtex=ensure.get("product_ref_id"),
+                    sku_ref_id_vtex=ensure.get("sku_ref_id"),
+                    error_code="VTEX_SKU_CREATE_FAILED",
                     error_detail=", ".join(ensure.get("blocking_reasons") or [])[:1800],
                     completed=True,
                     detail={"ensure": ensure},
