@@ -137,16 +137,24 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?);
             cursor.execute(
                 """
 MERGE dbo.source_document_match AS target
-USING (SELECT ? AS source_document_id, ? AS partnumber) AS source
+USING (
+    SELECT ? AS source_document_id, ? AS partnumber, ? AS match_type,
+           ? AS matched_pages_json, ? AS confidence_rank
+) AS source
 ON target.source_document_id = source.source_document_id
 AND target.partnumber = source.partnumber
 WHEN MATCHED THEN UPDATE SET
-    match_type = ?, matched_pages_json = ?, confidence_rank = ?, updated_at = SYSUTCDATETIME()
+    match_type = source.match_type,
+    matched_pages_json = source.matched_pages_json,
+    confidence_rank = source.confidence_rank,
+    updated_at = SYSUTCDATETIME()
 WHEN NOT MATCHED THEN INSERT(
     source_document_id, partnumber, match_type, matched_pages_json, confidence_rank
-) VALUES (?, ?, ?, ?, ?);
+) VALUES (
+    source.source_document_id, source.partnumber, source.match_type,
+    source.matched_pages_json, source.confidence_rank
+);
 """,
-                int(document_id), pn, match, pages_json, grade,
                 int(document_id), pn, match, pages_json, grade,
             )
             connection.commit()
