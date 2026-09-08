@@ -60,6 +60,7 @@ UPDATE i
 SET claimed_by = ?,
     claimed_at = SYSUTCDATETIME(),
     claim_expires_at = DATEADD(SECOND, ?, SYSUTCDATETIME()),
+    attempt_count = attempt_count + 1,
     updated_at = SYSUTCDATETIME()
 OUTPUT
     INSERTED.product_work_item_id,
