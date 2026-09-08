@@ -126,31 +126,21 @@ class LocalImageSyncService:
         rows: list[dict[str, Any]] = []
         errors: list[dict[str, Any]] = []
         seen_positions: set[int] = set()
-        seen_hashes: dict[str, Path] = {}
 
         for position, path in discovered:
             if position in seen_positions:
                 errors.append({"file": str(path), "reason": f"duplicate_position:{position}"})
                 continue
+            seen_positions.add(position)
             try:
                 metadata = self._inspect(path)
             except Exception as exc:
                 errors.append({"file": str(path), "reason": str(exc)})
                 continue
 
-            duplicate_path = seen_hashes.get(metadata["sha256_hash"])
-            if duplicate_path is not None:
-                errors.append(
-                    {
-                        "file": str(path),
-                        "reason": "duplicate_binary",
-                        "duplicate_of": str(duplicate_path),
-                    }
-                )
-                continue
-
-            seen_positions.add(position)
-            seen_hashes[metadata["sha256_hash"]] = path
+            # Position is part of the local image identity. The same binary may
+            # intentionally be assigned to more than one VTEX position, e.g.
+            # PN_01.jpg and PN_06.jpg. Only duplicate numeric positions conflict.
             stored = self.repository.upsert_local_image(
                 partnumber=normalized,
                 source_type="LOCAL_PC020",
