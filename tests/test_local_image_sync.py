@@ -13,12 +13,18 @@ class FakeImageRepository:
         self._next_id = 1
 
     def upsert_local_image(self, **row):
-        key = (row["partnumber"], row["sha256_hash"], row.get("variant_type", "ORIGINAL"))
+        key = (
+            row["partnumber"],
+            row["sha256_hash"],
+            row.get("variant_type", "ORIGINAL"),
+            int(row["position"]),
+        )
         for current in self.rows:
             current_key = (
                 current["partnumber"],
                 current["sha256_hash"],
                 current.get("variant_type", "ORIGINAL"),
+                int(current["position"]),
             )
             if current_key == key:
                 current.update(row)
