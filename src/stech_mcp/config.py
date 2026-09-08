@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import secrets
 from typing import Literal
 
-from pydantic import AliasChoices, Field, model_validator
+from pydantic import AliasChoices, Field, PrivateAttr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -67,6 +68,26 @@ class Settings(BaseSettings):
     mcp_public_host: str = "mcp.artos.pe"
     erp_product_view: str = "dbo.V_PRD_PRODUCTO_ACTUAL"
 
+    # VTEX image sync. The existing V8 channel credential names are accepted as
+    # aliases so PC020 can reuse the same API credential pair without renaming it.
+    stech_image_root: str = r"C:\STECH_IMAGENES"
+    vtex_account_name: str = "ststore227"
+    vtex_environment: str = "vtexcommercestable.com.br"
+    vtex_app_key: str | None = Field(
+        None,
+        validation_alias=AliasChoices("VTEX_APP_KEY", "CHN_CRED_VTEX_STECH_APP_KEY"),
+    )
+    vtex_app_token: str | None = Field(
+        None,
+        validation_alias=AliasChoices("VTEX_APP_TOKEN", "CHN_CRED_VTEX_STECH_APP_TOKEN"),
+    )
+    vtex_image_public_base: str = "https://mcp.artos.pe/vtex-images"
+    vtex_image_signing_secret: str | None = None
+    vtex_image_url_ttl_seconds: int = 900
+    vtex_http_timeout_seconds: int = 30
+
+    _generated_vtex_image_signing_secret: str | None = PrivateAttr(default=None)
+
     @model_validator(mode="after")
     def _derive_legacy_auth(self) -> "Settings":
         # Si stech_sql_auth fue provisto explícitamente (constructor, entorno o .env),
@@ -74,7 +95,25 @@ class Settings(BaseSettings):
         # cuando stech_sql_auth conserva su valor por defecto.
         if "stech_sql_auth" not in self.model_fields_set and self.dist_sql_trusted_connection is not None:
             self.stech_sql_auth = "windows" if self.dist_sql_trusted_connection else "sql"
+        if self.vtex_image_url_ttl_seconds <= 0:
+            raise ValueError("VTEX_IMAGE_URL_TTL_SECONDS must be greater than zero")
+        if self.vtex_http_timeout_seconds <= 0:
+            raise ValueError("VTEX_HTTP_TIMEOUT_SECONDS must be greater than zero")
         return self
+
+    def vtex_image_signing_secret_value(self) -> str:
+        """Return explicit secret or lazily generate one for this MCP process.
+
+        Signed image URLs live only a few minutes, so invalidating outstanding
+        URLs after a process restart is safe and removes a manual setup step.
+        """
+
+        explicit = str(self.vtex_image_signing_secret or "").strip()
+        if explicit:
+            return explicit
+        if self._generated_vtex_image_signing_secret is None:
+            self._generated_vtex_image_signing_secret = secrets.token_urlsafe(48)
+        return self._generated_vtex_image_signing_secret
 
 
 def _base_connection_parts(settings: Settings, database: str) -> list[str]:
