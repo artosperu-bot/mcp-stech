@@ -1,0 +1,270 @@
+from __future__ import annotations
+
+import os
+import signal
+import socket
+import threading
+import time
+from typing import Any, Callable
+
+from stech_mcp.config import Settings
+from stech_mcp.db.connection import make_mcp_connection_factory
+from stech_mcp.db.product_work_execution_repository import ProductWorkExecutionRepository
+from stech_mcp.services.product_work_dispatcher import (
+    PermanentWorkError,
+    ProductWorkDispatcher,
+    RetryableWorkError,
+    UnsupportedWorkTypeError,
+    enrichment_handler_not_installed,
+)
+
+
+_TERMINAL_RESULTS = {
+    "COMPLETED",
+    "PARTIAL",
+    "REVIEW_REQUIRED",
+    "NO_DATA_FOUND",
+    "FAILED",
+    "CANCELLED",
+}
+
+
+def retry_delay_seconds(failed_attempt_count: int) -> int:
+    attempt = max(int(failed_attempt_count), 1)
+    return min(60 * (2 ** (attempt - 1)), 3600)
+
+
+class ProductWorkWorker:
+    def __init__(
+        self,
+        repository: Any,
+        dispatcher: ProductWorkDispatcher,
+        *,
+        worker_id: str,
+        lease_seconds: int = 300,
+        poll_seconds: float = 5.0,
+        sleep_fn: Callable[[float], None] = time.sleep,
+    ) -> None:
+        self.repository = repository
+        self.dispatcher = dispatcher
+        self.worker_id = str(worker_id or "worker").strip()
+        self.lease_seconds = max(int(lease_seconds), 30)
+        self.poll_seconds = max(float(poll_seconds), 0.1)
+        self.sleep_fn = sleep_fn
+
+    @staticmethod
+    def _item_id(item: dict[str, Any]) -> int:
+        return int(item.get("item_id") or item.get("product_work_item_id"))
+
+    @staticmethod
+    def _job_id(item: dict[str, Any]) -> int:
+        return int(item.get("job_id") or item.get("product_work_job_id"))
+
+    def _record_event(
+        self,
+        item: dict[str, Any],
+        event_type: str,
+        *,
+        status: str | None = None,
+        detail: dict[str, Any] | None = None,
+    ) -> None:
+        recorder = getattr(self.repository, "record_event", None)
+        if callable(recorder):
+            recorder(item, event_type, status=status, detail=detail)
+
+    def _record_attempt_start(self, item: dict[str, Any]) -> dict[str, Any] | None:
+        recorder = getattr(self.repository, "record_attempt_start", None)
+        if callable(recorder):
+            return recorder(item, self.worker_id)
+        return None
+
+    def _record_attempt_end(
+        self,
+        attempt: dict[str, Any] | None,
+        *,
+        outcome_status: str,
+        error_code: str | None = None,
+        error_detail: str | None = None,
+    ) -> None:
+        if not attempt:
+            return
+        recorder = getattr(self.repository, "record_attempt_end", None)
+        if callable(recorder):
+            recorder(
+                int(attempt["attempt_id"]),
+                outcome_status=outcome_status,
+                error_code=error_code,
+                error_detail=error_detail,
+            )
+
+    def _refresh_summary(self, item: dict[str, Any]) -> None:
+        refresher = getattr(self.repository, "refresh_job_summary", None)
+        if callable(refresher):
+            refresher(self._job_id(item))
+
+    def run_once(self) -> bool:
+        item = self.repository.claim_next(self.worker_id, self.lease_seconds)
+        if item is None:
+            return False
+
+        item_id = self._item_id(item)
+        attempt = self._record_attempt_start(item)
+        self._record_event(item, "CLAIMED", status=str(item.get("status") or "QUEUED"))
+        current_status = str(item.get("status") or "QUEUED").strip().upper()
+
+        try:
+            if current_status == "FAILED_RETRYABLE":
+                item = self.repository.transition_item(
+                    item_id,
+                    status="QUEUED",
+                    current_step="retry claimed",
+                    progress_pct=0,
+                )
+                current_status = "QUEUED"
+
+            item = self.repository.transition_item(
+                item_id,
+                status="LOADING_SOURCE_DATA",
+                current_step="loading source data",
+                progress_pct=1,
+            )
+            current_status = "LOADING_SOURCE_DATA"
+
+            def progress(state: str, percent: int) -> None:
+                nonlocal item, current_status
+                target = str(state or "").strip().upper()
+                pct = max(0, min(int(percent), 100))
+                # Renew before any significant update so long-running handlers
+                # cannot accidentally lose ownership mid-step.
+                if not self.repository.renew_claim(item_id, self.worker_id, self.lease_seconds):
+                    raise RetryableWorkError("LEASE_LOST", "worker lease could not be renewed")
+                if target and target != current_status:
+                    item = self.repository.transition_item(
+                        item_id,
+                        status=target,
+                        current_step=target.lower().replace("_", " "),
+                        progress_pct=pct,
+                    )
+                    current_status = target
+                self._record_event(item, "PROGRESS", status=current_status, detail={"progress_pct": pct})
+
+            result = self.dispatcher.dispatch(item, progress)
+            target = str(result.get("status") or "").strip().upper()
+            if target not in _TERMINAL_RESULTS:
+                raise PermanentWorkError("INVALID_HANDLER_STATUS", f"unsupported handler status: {target}")
+
+            error_code = result.get("error_code")
+            error_detail = result.get("error_detail")
+            final_progress = 100 if target == "COMPLETED" else None
+            item = self.repository.transition_item(
+                item_id,
+                status=target,
+                current_step=str(result.get("current_step") or target.lower().replace("_", " ")),
+                progress_pct=final_progress,
+                error_code=str(error_code) if error_code else None,
+                error_detail=str(error_detail) if error_detail else None,
+            )
+            self._record_attempt_end(
+                attempt,
+                outcome_status=target,
+                error_code=str(error_code) if error_code else None,
+                error_detail=str(error_detail) if error_detail else None,
+            )
+            self._record_event(item, "FINISHED", status=target, detail={"result": target})
+            self._refresh_summary(item)
+            return True
+
+        except RetryableWorkError as exc:
+            failed_so_far = int(item.get("attempt_count") or 0) + 1
+            delay = retry_delay_seconds(failed_so_far)
+            item = self.repository.schedule_retry(
+                item_id,
+                error_code=exc.code,
+                error_detail=exc.detail,
+                delay_seconds=delay,
+            )
+            self._record_attempt_end(
+                attempt,
+                outcome_status="FAILED_RETRYABLE",
+                error_code=exc.code,
+                error_detail=exc.detail,
+            )
+            self._record_event(item, "RETRY_SCHEDULED", status="FAILED_RETRYABLE", detail={"delay_seconds": delay})
+            self._refresh_summary(item)
+            return True
+
+        except (UnsupportedWorkTypeError, PermanentWorkError) as exc:
+            item = self.repository.transition_item(
+                item_id,
+                status="FAILED",
+                current_step="failed",
+                error_code=exc.code,
+                error_detail=exc.detail,
+            )
+            self._record_attempt_end(
+                attempt,
+                outcome_status="FAILED",
+                error_code=exc.code,
+                error_detail=exc.detail,
+            )
+            self._record_event(item, "FAILED", status="FAILED", detail={"error_code": exc.code})
+            self._refresh_summary(item)
+            return True
+
+        except Exception as exc:
+            code = "UNHANDLED_WORK_ERROR"
+            detail = f"{type(exc).__name__}: {exc}"
+            item = self.repository.transition_item(
+                item_id,
+                status="FAILED",
+                current_step="failed",
+                error_code=code,
+                error_detail=detail,
+            )
+            self._record_attempt_end(attempt, outcome_status="FAILED", error_code=code, error_detail=detail)
+            self._record_event(item, "FAILED", status="FAILED", detail={"error_code": code})
+            self._refresh_summary(item)
+            return True
+
+    def run_forever(self, stop_event: Any) -> None:
+        self.repository.release_expired_claims()
+        while not stop_event.is_set():
+            did_work = self.run_once()
+            if not did_work:
+                self.sleep_fn(self.poll_seconds)
+
+
+def build_worker_from_environment() -> ProductWorkWorker:
+    settings = Settings()
+    repository = ProductWorkExecutionRepository(make_mcp_connection_factory(settings))
+    dispatcher = ProductWorkDispatcher()
+    dispatcher.register("ENRICH_TECHNICAL", enrichment_handler_not_installed)
+    worker_id = f"{socket.gethostname()}:{os.getpid()}"
+    return ProductWorkWorker(
+        repository,
+        dispatcher,
+        worker_id=worker_id,
+        lease_seconds=int(os.getenv("STECH_WORKER_LEASE_SECONDS", "300")),
+        poll_seconds=float(os.getenv("STECH_WORKER_POLL_SECONDS", "5")),
+    )
+
+
+def main() -> None:
+    worker = build_worker_from_environment()
+    stop_event = threading.Event()
+
+    def request_stop(signum: int, frame: Any) -> None:
+        del signum, frame
+        stop_event.set()
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            signal.signal(sig, request_stop)
+        except (ValueError, OSError):
+            pass
+
+    worker.run_forever(stop_event)
+
+
+if __name__ == "__main__":
+    main()
