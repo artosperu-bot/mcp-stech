@@ -45,9 +45,16 @@ class ProductWorkService:
             category = str(row.get("category_code") or "").strip().upper() or None
             channel = str(row.get("channel_code") or "").strip().upper() or None
             context_hash = make_context_hash(normalized_work_type, pn, category, channel)
-            if context_hash in seen:
+
+            # Technical enrichment is a product-level action. If the same PN is
+            # repeated in one request, keep the first row/context instead of
+            # launching duplicate research merely because a later row omits a
+            # category/channel value. Other work types retain context-level
+            # deduplication.
+            dedupe_key = pn if normalized_work_type == "ENRICH_TECHNICAL" else context_hash
+            if dedupe_key in seen:
                 continue
-            seen.add(context_hash)
+            seen.add(dedupe_key)
 
             if normalized_work_type == "ENRICH_TECHNICAL":
                 item = {key: row[key] for key in _TECHNICAL_INPUT_KEYS if key in row}
