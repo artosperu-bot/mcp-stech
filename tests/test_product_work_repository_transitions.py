@@ -57,7 +57,7 @@ def test_invalid_terminal_transition_is_rejected_without_update():
     assert conn.closed is True
 
 
-def test_retry_scheduling_clears_claim_and_increments_attempt_count():
+def test_retry_scheduling_uses_attempt_count_already_recorded_at_start():
     row = (
         10, 3, "ENRICH_TECHNICAL", "PN1", "LAPTOP", None,
         "b" * 64, '{"partnumber":"PN1"}', "FAILED_RETRYABLE", "retry scheduled",
@@ -76,7 +76,8 @@ def test_retry_scheduling_clears_claim_and_increments_attempt_count():
 
     assert item["status"] == "FAILED_RETRYABLE"
     sql = "\n".join(text.upper() for text, _ in cursor.executions)
-    assert "ATTEMPT_COUNT = ATTEMPT_COUNT + 1" in sql
+    assert "ATTEMPT_COUNT = ATTEMPT_COUNT + 1" not in sql
+    assert "ATTEMPT_COUNT >= MAX_ATTEMPTS" in sql
     assert "NEXT_ATTEMPT_AT" in sql
     assert "CLAIMED_BY = NULL" in sql
     assert "CLAIM_EXPIRES_AT = NULL" in sql
