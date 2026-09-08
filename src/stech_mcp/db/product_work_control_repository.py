@@ -14,6 +14,7 @@ class ProductWorkControlRepository(ProductWorkRepository):
         source_name: str,
         actor_source: str,
         priority: int,
+        max_attempts: int,
         items: list[dict[str, Any]],
     ) -> dict[str, Any]:
         conn = self.connection_factory()
@@ -45,10 +46,10 @@ VALUES (?, ?, ?, N'PENDING', ?);
                     """
 INSERT INTO dbo.product_work_item(
     product_work_job_id, work_type, partnumber, category_code, channel_code,
-    source_row_number, context_hash, input_json, status, priority
+    source_row_number, context_hash, input_json, status, priority, max_attempts
 )
 OUTPUT INSERTED.product_work_item_id
-SELECT ?, ?, ?, ?, ?, ?, ?, ?, N'QUEUED', ?
+SELECT ?, ?, ?, ?, ?, ?, ?, ?, N'QUEUED', ?, ?
 WHERE NOT EXISTS (
     SELECT 1
     FROM dbo.product_work_item WITH (UPDLOCK, HOLDLOCK)
@@ -64,6 +65,7 @@ WHERE NOT EXISTS (
                     context_hash,
                     json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
                     int(priority),
+                    int(max_attempts),
                     pn,
                     context_hash,
                 )
