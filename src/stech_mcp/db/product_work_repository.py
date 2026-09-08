@@ -266,9 +266,21 @@ WHERE product_work_item_id = ?;
             cur.execute(
                 """
 UPDATE dbo.product_work_item
-SET claimed_by = NULL,
+SET status = CASE
+        WHEN attempt_count >= max_attempts THEN N'FAILED'
+        ELSE N'FAILED_RETRYABLE'
+    END,
+    current_step = CASE
+        WHEN attempt_count >= max_attempts THEN N'expired lease reached max attempts'
+        ELSE N'recovered expired worker lease'
+    END,
+    next_attempt_at = NULL,
+    claimed_by = NULL,
     claimed_at = NULL,
     claim_expires_at = NULL,
+    last_error_code = N'WORKER_LEASE_EXPIRED',
+    last_error_detail = N'Worker claim expired before the item reached a terminal state.',
+    completed_at = CASE WHEN attempt_count >= max_attempts THEN SYSUTCDATETIME() ELSE completed_at END,
     updated_at = SYSUTCDATETIME()
 WHERE claim_expires_at IS NOT NULL
   AND claim_expires_at <= SYSUTCDATETIME()
