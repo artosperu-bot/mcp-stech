@@ -17,6 +17,16 @@ class VtexImageApiError(RuntimeError):
         detail = body.strip() or "sin detalle"
         super().__init__(f"VTEX {status_text} en {operation}: {detail}")
 
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "exception_type": type(self).__name__,
+            "operation": self.operation,
+            "status_http": self.status,
+            "url": self.url,
+            "body": self.body,
+            "message": str(self),
+        }
+
 
 class VtexImageClient:
     def __init__(
@@ -93,6 +103,66 @@ class VtexImageClient:
             return json.loads(text)
         except json.JSONDecodeError:
             return text
+
+    @staticmethod
+    def _require_dict(result: Any, *, operation: str, url: str) -> dict[str, Any]:
+        if not isinstance(result, dict):
+            raise VtexImageApiError(
+                operation=operation,
+                status=200,
+                body=f"respuesta inesperada: {result!r}",
+                url=url,
+            )
+        return result
+
+    def create_product(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise ValueError("payload must be a dict")
+        path = "/api/catalog/pvt/product"
+        return self._require_dict(
+            self._request(operation="create_product", method="POST", path=path, payload=payload),
+            operation="create_product",
+            url=f"{self.base_url}{path}",
+        )
+
+    def get_product(self, product_id: int) -> dict[str, Any]:
+        parsed = int(product_id)
+        path = f"/api/catalog/pvt/product/{parsed}"
+        return self._require_dict(
+            self._request(operation="get_product", method="GET", path=path),
+            operation="get_product",
+            url=f"{self.base_url}{path}",
+        )
+
+    def create_sku(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise ValueError("payload must be a dict")
+        path = "/api/catalog/pvt/stockkeepingunit"
+        return self._require_dict(
+            self._request(operation="create_sku", method="POST", path=path, payload=payload),
+            operation="create_sku",
+            url=f"{self.base_url}{path}",
+        )
+
+    def get_sku(self, sku_id: int) -> dict[str, Any]:
+        parsed = int(sku_id)
+        path = f"/api/catalog/pvt/stockkeepingunit/{parsed}"
+        return self._require_dict(
+            self._request(operation="get_sku", method="GET", path=path),
+            operation="get_sku",
+            url=f"{self.base_url}{path}",
+        )
+
+    def get_seller_product_by_external_id(self, external_id: str) -> dict[str, Any]:
+        token = str(external_id or "").strip()
+        if not token:
+            raise ValueError("external_id is required")
+        path = f"/api/catalog-seller-portal/products/external-id={quote(token, safe='')}"
+        return self._require_dict(
+            self._request(operation="get_seller_product_by_external_id", method="GET", path=path),
+            operation="get_seller_product_by_external_id",
+            url=f"{self.base_url}{path}",
+        )
 
     def resolve_sku_id(self, ref_id: str) -> int:
         ref = str(ref_id or "").strip()
