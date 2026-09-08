@@ -342,6 +342,11 @@ class VtexImageSyncService(_LegacyVtexImageSyncService):
             )
             or []
         )
+        publication_positions = {
+            int(row.get("position") or 0)
+            for row in publications
+            if int(row.get("position") or 0) > 0
+        }
         local_positions = {int(row["position"]) for row in images}
         removed_extra_count = sum(
             1
@@ -368,14 +373,32 @@ class VtexImageSyncService(_LegacyVtexImageSyncService):
                 product_image_id=image_id,
                 position=position,
             )
+            existing_position_asset = (
+                product_assets_before.get(_normalize_key(current_asset_id))
+                if current_asset_id is not None
+                else None
+            )
 
-            if current_publication is not None and current_asset_id is not None:
-                existing_asset = product_assets_before.get(_normalize_key(current_asset_id))
-                if existing_asset is not None:
-                    desired_assets.append(_copy_product_image(existing_asset))
-                    desired_ids.append(str(existing_asset["id"]))
-                    skipped_count += 1
-                    continue
+            if current_publication is not None and existing_position_asset is not None:
+                desired_assets.append(_copy_product_image(existing_position_asset))
+                desired_ids.append(str(existing_position_asset["id"]))
+                skipped_count += 1
+                continue
+
+            # When the product already has a correctly named positional image but
+            # the local publication table has never seen it (migration / first run),
+            # adopt it instead of manufacturing a replacement. If there is history
+            # for this position and the current product_image_id differs, the local
+            # binary changed and the replacement path below is intentional.
+            if (
+                current_publication is None
+                and position not in publication_positions
+                and existing_position_asset is not None
+            ):
+                desired_assets.append(_copy_product_image(existing_position_asset))
+                desired_ids.append(str(existing_position_asset["id"]))
+                skipped_count += 1
+                continue
 
             ordinal_slot_exists = index < len(target_before)
             replacing = current_asset_id is not None or ordinal_slot_exists
