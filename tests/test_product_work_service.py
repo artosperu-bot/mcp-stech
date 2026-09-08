@@ -21,7 +21,7 @@ class FakeRepository:
 
 def test_create_enrichment_job_dedupes_and_strips_commercial_fields():
     repo = FakeRepository()
-    service = ProductWorkService(repo)
+    service = ProductWorkService(repo, max_attempts=4)
 
     result = service.create_job(
         rows=[
@@ -44,6 +44,7 @@ def test_create_enrichment_job_dedupes_and_strips_commercial_fields():
     )
 
     assert result["total_items"] == 1
+    assert repo.created["max_attempts"] == 4
     item = repo.created["items"][0]
     assert item["partnumber"] == "PN1"
     assert item["category_code"] == "LAPTOP"
@@ -52,6 +53,13 @@ def test_create_enrichment_job_dedupes_and_strips_commercial_fields():
     assert "stock" not in item
     assert "cost" not in item
     assert "promotion_start" not in item
+
+
+def test_service_rejects_invalid_max_attempts():
+    with pytest.raises(ValueError, match="max_attempts"):
+        ProductWorkService(FakeRepository(), max_attempts=0)
+    with pytest.raises(ValueError, match="max_attempts"):
+        ProductWorkService(FakeRepository(), max_attempts=11)
 
 
 def test_create_job_rejects_invalid_priority_or_work_type():
