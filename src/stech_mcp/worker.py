@@ -8,15 +8,30 @@ import time
 from typing import Any, Callable
 
 from stech_mcp.config import Settings
-from stech_mcp.db.connection import make_mcp_connection_factory
+from stech_mcp.db.connection import make_mcp_connection_factory, make_source_connection_factory
+from stech_mcp.db.enrichment_repository import EnrichmentRepository
+from stech_mcp.db.fact_candidate_repository import FactCandidateRepository
+from stech_mcp.db.product_master_repository import ProductMasterRepository
+from stech_mcp.db.product_repository import ProductRepository
+from stech_mcp.db.product_schema_repository import ProductSchemaRepository
 from stech_mcp.db.product_work_execution_repository import ProductWorkExecutionRepository
+from stech_mcp.db.source_document_repository import SourceDocumentRepository
+from stech_mcp.services.deltron_fact_adapter import DeltronFactAdapter
+from stech_mcp.services.fact_extractor import FactExtractor
+from stech_mcp.services.fact_promotion import FactPromotionService
+from stech_mcp.services.handlers.enrich_technical import EnrichTechnicalHandler
+from stech_mcp.services.product_enrichment_engine import ProductEnrichmentEngine
+from stech_mcp.services.product_field_verification import ProductFieldVerificationService
+from stech_mcp.services.product_technical_status import ProductTechnicalStatusService
 from stech_mcp.services.product_work_dispatcher import (
     PermanentWorkError,
     ProductWorkDispatcher,
     RetryableWorkError,
     UnsupportedWorkTypeError,
-    enrichment_handler_not_installed,
 )
+from stech_mcp.services.research.brave_search_provider import BraveSearchProvider
+from stech_mcp.services.research.research_planner import ResearchPlanner
+from stech_mcp.services.source_document_service import SourceDocumentService
 
 
 _TERMINAL_RESULTS = {
@@ -263,9 +278,52 @@ def build_worker_from_environment() -> ProductWorkWorker:
         raise ValueError("Product Work V2 supports STECH_WORKER_CONCURRENCY=1 only")
 
     settings = Settings()
-    repository = ProductWorkExecutionRepository(make_mcp_connection_factory(settings))
+    mcp_connection_factory = make_mcp_connection_factory(settings)
+    source_connection_factory = make_source_connection_factory(settings)
+
+    repository = ProductWorkExecutionRepository(mcp_connection_factory)
+    product_repository = ProductRepository(source_connection_factory)
+    enrichment_repository = EnrichmentRepository(mcp_connection_factory)
+    schema_repository = ProductSchemaRepository(mcp_connection_factory)
+    candidate_repository = FactCandidateRepository(mcp_connection_factory)
+    source_document_repository = SourceDocumentRepository(mcp_connection_factory)
+    audit_repository = ProductMasterRepository(mcp_connection_factory)
+
+    technical_status_service = ProductTechnicalStatusService(
+        product_repository=product_repository,
+        enrichment_repository=enrichment_repository,
+        schema_repository=schema_repository,
+    )
+    verification_service = ProductFieldVerificationService(enrichment_repository)
+    promotion_service = FactPromotionService(
+        verification_service=verification_service,
+        enrichment_repository=enrichment_repository,
+        candidate_repository=candidate_repository,
+    )
+    search_provider = BraveSearchProvider(
+        api_key=os.getenv("STECH_BRAVE_SEARCH_API_KEY", ""),
+        country=os.getenv("STECH_SEARCH_COUNTRY", "PE"),
+        search_lang=os.getenv("STECH_SEARCH_LANG", "es"),
+    )
+    source_document_service = SourceDocumentService(
+        document_repository=source_document_repository,
+    )
+    enrichment_engine = ProductEnrichmentEngine(
+        product_repository=product_repository,
+        technical_status_service=technical_status_service,
+        deltron_adapter=DeltronFactAdapter(),
+        candidate_repository=candidate_repository,
+        promotion_service=promotion_service,
+        research_planner=ResearchPlanner(),
+        search_provider=search_provider,
+        source_document_service=source_document_service,
+        fact_extractor=FactExtractor(),
+        audit_repository=audit_repository,
+    )
+    enrichment_handler = EnrichTechnicalHandler(enrichment_engine)
+
     dispatcher = ProductWorkDispatcher()
-    dispatcher.register("ENRICH_TECHNICAL", enrichment_handler_not_installed)
+    dispatcher.register("ENRICH_TECHNICAL", enrichment_handler)
     worker_id = f"{socket.gethostname()}:{os.getpid()}"
     return ProductWorkWorker(
         repository,
