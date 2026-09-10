@@ -48,9 +48,11 @@ class FakeCursor:
                 ("updated_at",),
             ]
             ts = datetime(2026, 9, 10, 14, 31, tzinfo=timezone.utc)
+            # Fake cursors do not execute SQL ordering, so return rows in the same
+            # order required by the query: job DESC, row_number ASC, item id ASC.
             self._rows = [
-                (102, 42, 3, " 83gw005fld ", "COMPLETED", None, None, ts, ts),
                 (101, 42, 2, " 82yu00xylm ", "COMPLETED", None, None, ts, ts),
+                (102, 42, 3, " 83gw005fld ", "COMPLETED", None, None, ts, ts),
                 (99, 41, 2, "OLD-PN", "FAILED", "SOURCE_NOT_FOUND", "No encontrado", ts, ts),
             ]
         else:
