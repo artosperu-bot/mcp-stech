@@ -195,9 +195,22 @@ IF NOT EXISTS (
       AND name = N'UX_product_work_item_active_key'
 )
 BEGIN
+    -- SQL Server permits computed columns in index keys, but not in a filtered
+    -- index predicate. Enforce the same active-work uniqueness using the base
+    -- columns and a filter on the normal status column.
     CREATE UNIQUE INDEX UX_product_work_item_active_key
-        ON dbo.product_work_item(active_work_key)
-        WHERE active_work_key IS NOT NULL;
+        ON dbo.product_work_item(partnumber, context_hash)
+        WHERE status IN (
+            N'QUEUED',
+            N'LOADING_SOURCE_DATA',
+            N'ANALYZING_MISSING_FIELDS',
+            N'RESEARCHING',
+            N'READING_DOCUMENTS',
+            N'VALIDATING',
+            N'PROMOTING_FACTS',
+            N'REBUILDING_PRODUCT_MASTER',
+            N'FAILED_RETRYABLE'
+        );
 END;
 
 IF NOT EXISTS (
