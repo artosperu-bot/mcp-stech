@@ -437,6 +437,71 @@ class ProductLoaderRepository:
         finally:
             connection.close()
 
+    def list_jobs(self, limit: int = 50) -> list[dict[str, Any]]:
+        bounded = max(1, min(int(limit), 500))
+        connection = self.connection_factory()
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                f"""
+                SELECT TOP ({bounded})
+                    product_loader_job_id, source_name, channel, actor_source,
+                    status, total_items, completed_items, review_items,
+                    blocked_items, failed_items, created_at, started_at,
+                    finished_at, updated_at
+                FROM dbo.product_loader_job
+                ORDER BY product_loader_job_id DESC
+                """
+            )
+            jobs = _rows_to_dicts(cursor, list(cursor.fetchall()))
+            if not jobs:
+                return []
+
+            job_ids = [int(job["product_loader_job_id"]) for job in jobs]
+            placeholders = ",".join("?" for _ in job_ids)
+            cursor.execute(
+                f"""
+                SELECT
+                    product_loader_job_item_id, product_loader_job_id, row_number,
+                    partnumber, status, last_error_code, last_error_detail,
+                    created_at, updated_at
+                FROM dbo.product_loader_job_item
+                WHERE product_loader_job_id IN ({placeholders})
+                ORDER BY product_loader_job_id DESC, row_number, product_loader_job_item_id
+                """,
+                *job_ids,
+            )
+            item_rows = _rows_to_dicts(cursor, list(cursor.fetchall()))
+            items_by_job: dict[int, list[dict[str, Any]]] = {job_id: [] for job_id in job_ids}
+            for row in item_rows:
+                job_id = int(row.get("product_loader_job_id"))
+                items_by_job.setdefault(job_id, []).append(
+                    {
+                        "item_id": row.get("product_loader_job_item_id"),
+                        "row_number": row.get("row_number"),
+                        "partnumber": normalize_partnumber(row.get("partnumber")),
+                        "status": row.get("status"),
+                        "last_error_code": row.get("last_error_code"),
+                        "last_error_detail": row.get("last_error_detail"),
+                        "created_at": row.get("created_at"),
+                        "updated_at": row.get("updated_at"),
+                    }
+                )
+
+            result: list[dict[str, Any]] = []
+            for job in jobs:
+                job_id = int(job.get("product_loader_job_id"))
+                result.append(
+                    {
+                        **job,
+                        "job_id": job_id,
+                        "items": items_by_job.get(job_id, []),
+                    }
+                )
+            return result
+        finally:
+            connection.close()
+
     def get_job(self, job_id: int) -> dict[str, Any] | None:
         parsed_job_id = int(job_id)
         connection = self.connection_factory()
