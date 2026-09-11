@@ -1,3 +1,9 @@
+from types import SimpleNamespace
+
+from stech_mcp.services.budgeted_worker_factory import (
+    allowed_types_for_worker,
+    effective_background_worker_count,
+)
 from stech_mcp.services.work_type_limited_repository import WorkTypeLimitedRepository
 from stech_mcp.worker import ProductWorkWorker
 
@@ -33,3 +39,17 @@ def test_unrestricted_worker_keeps_legacy_claim_signature():
     worker = ProductWorkWorker(repo, Dispatcher(), worker_id="legacy")
     assert worker.run_once() is False
     assert repo.called is True
+
+
+def test_default_budget_assigns_two_technical_and_one_image_worker():
+    cfg = SimpleNamespace(max_workers=3, max_research_jobs=2, max_image_jobs=1)
+    assert effective_background_worker_count(cfg) == 3
+    assert allowed_types_for_worker(1, cfg) == ("ENRICH_TECHNICAL",)
+    assert allowed_types_for_worker(2, cfg) == ("ENRICH_TECHNICAL",)
+    assert allowed_types_for_worker(3, cfg) == ("RESEARCH_IMAGES",)
+
+
+def test_single_worker_remains_general_but_total_concurrency_is_one():
+    cfg = SimpleNamespace(max_workers=1, max_research_jobs=2, max_image_jobs=1)
+    assert effective_background_worker_count(cfg) == 1
+    assert allowed_types_for_worker(1, cfg) is None
