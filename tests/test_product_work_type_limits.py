@@ -1,3 +1,4 @@
+from stech_mcp.services.work_type_limited_repository import WorkTypeLimitedRepository
 from stech_mcp.worker import ProductWorkWorker
 
 
@@ -9,24 +10,17 @@ class Repo:
         self.claim_args = (worker_id, lease_seconds, tuple(allowed_work_types or ()))
         return None
 
-    def release_expired_claims(self):
-        return 0
-
 
 class Dispatcher:
     pass
 
 
-def test_worker_passes_allowed_work_types_to_claim():
-    repo = Repo()
-    worker = ProductWorkWorker(
-        repo,
-        Dispatcher(),
-        worker_id="img-1",
-        allowed_work_types=("RESEARCH_IMAGES",),
-    )
+def test_limited_repository_passes_allowed_work_types_to_claim():
+    inner = Repo()
+    limited = WorkTypeLimitedRepository(inner, ("RESEARCH_IMAGES",))
+    worker = ProductWorkWorker(limited, Dispatcher(), worker_id="img-1")
     assert worker.run_once() is False
-    assert repo.claim_args[2] == ("RESEARCH_IMAGES",)
+    assert inner.claim_args[2] == ("RESEARCH_IMAGES",)
 
 
 def test_unrestricted_worker_keeps_legacy_claim_signature():
