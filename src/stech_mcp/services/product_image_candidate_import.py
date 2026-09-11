@@ -33,11 +33,13 @@ class ProductImageCandidateImportService:
         candidate_repository: Any,
         image_repository: Any,
         source_client: Any,
+        product_repository: Any | None = None,
     ) -> None:
         self.root = Path(root).expanduser().resolve()
         self.candidate_repository = candidate_repository
         self.image_repository = image_repository
         self.source_client = source_client
+        self.product_repository = product_repository
 
     @staticmethod
     def _next_position(rows: list[dict[str, Any]]) -> int:
@@ -56,6 +58,21 @@ class ProductImageCandidateImportService:
         if int(width) <= 0 or int(height) <= 0:
             raise ValueError("invalid image dimensions")
         return digest, int(width), int(height), image_format
+
+    def _product_path_context(self, partnumber: str) -> tuple[str | None, str | None]:
+        if self.product_repository is None:
+            return None, None
+        product = self.product_repository.get_by_partnumber(partnumber)
+        if not product:
+            return None, None
+        brand = product.get("marca") or product.get("brand")
+        category = (
+            product.get("subcategoria")
+            or product.get("categoria")
+            or product.get("category_code")
+            or product.get("familia")
+        )
+        return (str(brand).strip() if brand else None, str(category).strip() if category else None)
 
     def import_candidate(
         self,
@@ -85,6 +102,10 @@ class ProductImageCandidateImportService:
         source_url = str(candidate.get("source_url") or "").strip()
         if not source_url:
             raise ValueError("candidate source_url is required")
+
+        derived_brand, derived_category = self._product_path_context(partnumber)
+        brand = brand or derived_brand
+        category_code = category_code or derived_category
 
         response = self.source_client.fetch(source_url)
         digest, width, height, image_format = self._inspect(response.content)
@@ -123,8 +144,6 @@ class ProductImageCandidateImportService:
                 background_status="IMPORTED_FROM_CANDIDATE",
             )
         except Exception:
-            # Persistence failed after file creation. Remove only the new file we
-            # just created; never touch any pre-existing original.
             try:
                 target_path.unlink(missing_ok=True)
             finally:
