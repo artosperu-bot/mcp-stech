@@ -42,6 +42,9 @@ class ChannelGapAnalyzer:
                 "category_code": category,
                 "requirements_version": requirements_version,
                 "state": "NOT_CONFIGURED",
+                "completion_pct": 0,
+                "missing_count": 0,
+                "conflict_count": 0,
                 "fields": [],
                 "image_readiness": None,
             }
@@ -66,20 +69,20 @@ class ChannelGapAnalyzer:
             scope = str(field.get("data_scope") or "TECHNICAL").strip().upper()
 
             if scope in {"COMMERCIAL", "CONTROL"} or not master:
-                state = "CHANNEL_INPUT"
+                field_state = "CHANNEL_INPUT"
                 value = None
                 if requirement == "REQUIRED":
                     channel_input_required += 1
             elif master.lower() in conflicts:
-                state = "CONFLICT"
+                field_state = "CONFLICT"
                 value = known.get(master)
                 if requirement == "REQUIRED":
                     required_conflicts += 1
             elif master in known and known.get(master) not in (None, ""):
-                state = "COMPLETE"
+                field_state = "COMPLETE"
                 value = known.get(master)
             else:
-                state = "MISSING"
+                field_state = "MISSING"
                 value = None
                 if requirement == "REQUIRED":
                     required_missing += 1
@@ -89,7 +92,8 @@ class ChannelGapAnalyzer:
                     **field,
                     "target_field_code": target,
                     "master_field_code": master or None,
-                    "state": state,
+                    "state": field_state,
+                    "status": field_state,
                     "value": value,
                 }
             )
@@ -102,11 +106,11 @@ class ChannelGapAnalyzer:
         image_blocked = str(image_readiness.get("state") or "").upper() != "READY"
 
         if required_conflicts:
-            state = "BLOCKED_CONFLICT"
+            overall_state = "BLOCKED_CONFLICT"
         elif required_missing or channel_input_required or image_blocked:
-            state = "INCOMPLETE"
+            overall_state = "INCOMPLETE"
         else:
-            state = "READY"
+            overall_state = "READY"
 
         required_total = sum(
             1
@@ -119,6 +123,7 @@ class ChannelGapAnalyzer:
             if str(field.get("requirement") or "").upper() == "REQUIRED"
             and field.get("state") == "COMPLETE"
         )
+        completion_pct = round((required_complete / required_total) * 100) if required_total else 100
         return {
             "partnumber": pn,
             "channel_code": channel,
@@ -126,7 +131,10 @@ class ChannelGapAnalyzer:
             "category_code": category,
             "template_code": requirements.get("template_code"),
             "requirements_version": requirements.get("version_code"),
-            "state": state,
+            "state": overall_state,
+            "completion_pct": completion_pct,
+            "missing_count": required_missing,
+            "conflict_count": required_conflicts,
             "required_total": required_total,
             "required_complete": required_complete,
             "required_missing": required_missing,
