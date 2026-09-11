@@ -4,11 +4,37 @@ from typing import Any
 
 
 class ChannelDraftService:
-    """Create a versioned preparation snapshot only when channel readiness is safe."""
+    """Create versioned preparation snapshots and expose their history."""
 
-    def __init__(self, *, gap_analyzer: Any, draft_repository: Any) -> None:
+    def __init__(
+        self,
+        *,
+        gap_analyzer: Any,
+        draft_repository: Any,
+        history_repository: Any | None = None,
+    ) -> None:
         self.gap_analyzer = gap_analyzer
         self.draft_repository = draft_repository
+        self.history_repository = history_repository or draft_repository
+
+    def history(
+        self,
+        partnumber: str,
+        channel_code: str | None = None,
+        *,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        pn = str(partnumber or "").strip().upper()
+        channel = str(channel_code or "").strip().upper() or None
+        if not pn:
+            raise ValueError("partnumber is required")
+        return list(
+            self.history_repository.list_drafts(
+                pn,
+                channel,
+                limit=max(1, min(int(limit), 100)),
+            )
+        )
 
     def prepare(
         self,
