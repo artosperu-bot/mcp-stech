@@ -16,21 +16,26 @@ class EnrichTechnicalHandler:
 
     def __init__(self, engine: Any) -> None:
         self.engine = engine
-        self.identity_service = ProductIdentityResearchService(
-            product_repository=engine.product_repository,
-            enrichment_repository=engine.promotion_service.enrichment_repository,
-            candidate_repository=engine.candidate_repository,
-            promotion_service=engine.promotion_service,
-            search_provider=engine.search_provider,
-            source_document_service=engine.source_document_service,
-            fact_extractor=IdentityBarcodeExtractor(),
-            audit_repository=engine.audit_repository,
-        )
+        self.identity_service = None
 
     @staticmethod
     def _input(item: dict[str, Any]) -> dict[str, Any]:
         payload = item.get("input")
         return payload if isinstance(payload, dict) else {}
+
+    def _get_identity_service(self) -> ProductIdentityResearchService:
+        if self.identity_service is None:
+            self.identity_service = ProductIdentityResearchService(
+                product_repository=self.engine.product_repository,
+                enrichment_repository=self.engine.promotion_service.enrichment_repository,
+                candidate_repository=self.engine.candidate_repository,
+                promotion_service=self.engine.promotion_service,
+                search_provider=self.engine.search_provider,
+                source_document_service=self.engine.source_document_service,
+                fact_extractor=IdentityBarcodeExtractor(),
+                audit_repository=self.engine.audit_repository,
+            )
+        return self.identity_service
 
     def _identity(self,item:dict[str,Any],progress:Any)->dict[str,Any]:
         partnumber=str(item.get("partnumber") or "").strip().upper()
@@ -38,7 +43,7 @@ class EnrichTechnicalHandler:
         requested=payload.get("requested_fields")
         if requested is not None and not isinstance(requested,list): requested=None
         try:
-            result=self.identity_service.research(partnumber,requested,progress)
+            result=self._get_identity_service().research(partnumber,requested,progress)
         except LookupError as exc:
             return {"status":"NO_DATA_FOUND","current_step":"PRODUCT_NOT_FOUND","error_code":"PRODUCT_NOT_FOUND","error_detail":str(exc)}
         except (TimeoutError,httpx.TimeoutException,httpx.TransportError) as exc:
