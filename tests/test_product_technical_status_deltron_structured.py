@@ -28,10 +28,12 @@ class Specs:
 
 class Enrichments:
     def get_approved(self, partnumber, field_codes=None):
+        # Existing enrichment is deliberately different: Deltron remains the
+        # authority whenever it already has the exact PN field.
         return [
             {
                 "field_code": "cpu_model",
-                "value_text": "AMD Ryzen 5 7520U verified",
+                "value_text": "AMD Ryzen 5 7520U verified external",
                 "value_number": None,
                 "unit": None,
                 "confidence_grade": "A1",
@@ -67,8 +69,8 @@ def test_status_uses_structured_deltron_specs_before_research_and_tracks_source(
     assert result["field_sources"]["ram_gb"] == "DELTRON"
     assert result["field_sources"]["storage_gb"] == "DELTRON"
     assert result["field_sources"]["battery_wh"] == "DELTRON"
-    assert result["known_fields"]["cpu_model"] == "AMD Ryzen 5 7520U verified"
-    assert result["field_sources"]["cpu_model"] == "ENRICHMENT"
+    assert result["known_fields"]["cpu_model"] == "AMD RYZEN 5 7520U"
+    assert result["field_sources"]["cpu_model"] == "DELTRON"
     assert result["missing_required"] == []
     assert result["missing_recommended"] == []
     assert result["completion_pct"] == 100
