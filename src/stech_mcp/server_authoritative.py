@@ -21,6 +21,10 @@ from stech_mcp.db.product_work_control_repository import ProductWorkControlRepos
 from stech_mcp.db.product_work_query_repository import ProductWorkQueryRepository
 from stech_mcp.db.source_document_repository import SourceDocumentRepository
 from stech_mcp.http.source_client import SourceClient
+from stech_mcp.services.budgeted_worker_factory import (
+    build_budgeted_background_worker,
+    effective_background_worker_count,
+)
 from stech_mcp.services.channel_draft_service import ChannelDraftService
 from stech_mcp.services.channel_gap_analyzer import ChannelGapAnalyzer
 from stech_mcp.services.fact_extractor import FactExtractor
@@ -41,7 +45,6 @@ from stech_mcp.tools.product_research import register_product_research_tools
 from stech_mcp.tools.product_schema import register_product_schema_tools
 from stech_mcp.tools.product_work import register_product_work_tools
 from stech_mcp.tools.product_workspace_v2 import register_product_workspace_v2_tools
-from stech_mcp.worker import build_worker_from_environment
 
 
 vtex_image_sync_service = VtexImageSyncService(
@@ -163,16 +166,17 @@ product_scanner = ProductScanner(
     image_readiness_service=product_image_readiness_service,
     work_service=product_work_service,
 )
+_background_worker_count = effective_background_worker_count(background_config)
 background_runtime = BackgroundRuntime(
     scanner=product_scanner,
     scan_interval_seconds=background_config.scan_interval_minutes * 60,
     max_jobs_per_scan=background_config.max_jobs_per_scan,
     worker_factory=(
-        (lambda index: build_worker_from_environment(worker_suffix=f"bg{index}"))
+        (lambda index: build_budgeted_background_worker(index, background_config))
         if background_config.background_enabled
         else None
     ),
-    max_workers=(background_config.max_workers if background_config.background_enabled else 0),
+    max_workers=(_background_worker_count if background_config.background_enabled else 0),
 )
 product_workspace_v2_tools = register_product_workspace_v2_tools(
     _server.mcp,
