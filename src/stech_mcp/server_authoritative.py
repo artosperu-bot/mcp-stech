@@ -20,11 +20,13 @@ from stech_mcp.db.product_schema_repository import ProductSchemaRepository
 from stech_mcp.db.product_work_control_repository import ProductWorkControlRepository
 from stech_mcp.db.product_work_query_repository import ProductWorkQueryRepository
 from stech_mcp.db.source_document_repository import SourceDocumentRepository
+from stech_mcp.http.source_client import SourceClient
 from stech_mcp.services.channel_draft_service import ChannelDraftService
 from stech_mcp.services.channel_gap_analyzer import ChannelGapAnalyzer
 from stech_mcp.services.fact_extractor import FactExtractor
 from stech_mcp.services.fact_promotion import FactPromotionService
 from stech_mcp.services.multichannel_readiness import MultichannelReadinessService
+from stech_mcp.services.product_image_candidate_import import ProductImageCandidateImportService
 from stech_mcp.services.product_image_readiness import ProductImageReadinessService
 from stech_mcp.services.product_image_research import ProductImageResearchService
 from stech_mcp.services.product_scanner import ProductScanner
@@ -106,7 +108,7 @@ product_research_tools = register_product_research_tools(
 )
 
 # Images are a first-class Product Workspace dimension. External search only
-# creates evidence candidates; it never publishes or silently approves ambiguity.
+# creates evidence candidates; an explicit approval/import action is required.
 product_image_candidate_repository = ProductImageCandidateRepository(_server.mcp_connection_factory)
 product_image_readiness_service = ProductImageReadinessService(
     product_repository=_server.product_repository,
@@ -125,6 +127,13 @@ product_image_research_service = ProductImageResearchService(
     readiness_service=product_image_readiness_service,
     candidate_repository=product_image_candidate_repository,
     search_provider=product_image_search_provider,
+)
+product_image_candidate_import_service = ProductImageCandidateImportService(
+    root=_server.settings.stech_image_root,
+    candidate_repository=product_image_candidate_repository,
+    image_repository=_server.product_image_repository,
+    source_client=SourceClient(max_bytes=10 * 1024 * 1024),
+    product_repository=_server.product_repository,
 )
 
 # Channel requirements are versioned and stay separate from product truth.
@@ -172,6 +181,7 @@ product_workspace_v2_tools = register_product_workspace_v2_tools(
     image_readiness_service=product_image_readiness_service,
     image_research_service=product_image_research_service,
     candidate_repository=product_image_candidate_repository,
+    candidate_import_service=product_image_candidate_import_service,
     channel_gap_analyzer=channel_gap_analyzer,
     channel_draft_service=channel_draft_service,
     workspace_service=product_workspace_v2_service,
