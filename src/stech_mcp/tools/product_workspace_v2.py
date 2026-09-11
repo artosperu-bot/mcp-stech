@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any
 
+from stech_mcp.tools.core import set_health_extra_provider
+
 
 def register_product_workspace_v2_tools(
     mcp: Any,
@@ -43,6 +45,19 @@ def register_product_workspace_v2_tools(
         if not rows:
             raise ValueError("at least one valid partnumber is required")
         return rows
+
+    def _health_extra() -> dict[str, Any]:
+        background = dict(runtime.status())
+        threads = list(getattr(runtime, "_worker_threads", []) or [])
+        background["workers_alive"] = sum(1 for thread in threads if thread.is_alive())
+        recent_jobs = list(work_service.list_jobs(limit=50))
+        background["jobs"] = dict(
+            Counter(str(row.get("status") or "UNKNOWN").upper() for row in recent_jobs)
+        )
+        background["recovery"] = "LEASE_RECOVERY_ON_WORKER_START"
+        return {"authoritative_v2": True, "background": background}
+
+    set_health_extra_provider(_health_extra)
 
     @mcp.tool()
     def background_status() -> dict[str, Any]:
