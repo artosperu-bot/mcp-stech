@@ -64,13 +64,18 @@ class ProductIdentityResearchService:
             field=str(row.get("field_code") or "").strip().lower()
             value=str(row.get("normalized_value") or "").strip()
             if field not in IDENTITY_FIELDS or not validate_gtin(value): continue
+            source_pn=str(row.get("source_partnumber") or "").strip().upper()
+            source_type=str(row.get("source_type") or "").strip().upper()
+            confidence=str(row.get("confidence_rank") or "").strip().upper()
+            if source_pn!=pn or source_type not in {"MANUFACTURER","OFFICIAL_DOCUMENT","AUTHORIZED_DISTRIBUTOR"} or confidence not in {"A1","A2","B"}:
+                continue
             saved=self.candidate_repository.add(
                 partnumber=pn,field_code=field,raw_value=row.get("raw_value"),normalized_value=value,
-                unit=None,source_type=str(row.get("source_type") or "").upper(),source_name=row.get("source_name"),
-                source_url=row.get("source_url"),source_partnumber=row.get("source_partnumber"),
+                unit=None,source_type=source_type,source_name=row.get("source_name"),
+                source_url=row.get("source_url"),source_partnumber=source_pn,
                 evidence_text=row.get("evidence_text"),page_number=row.get("page_number"),
-                confidence_rank=str(row.get("confidence_rank") or "").upper(),state="PENDING")
-            out.append({**row,**saved,"normalized_value":value})
+                confidence_rank=confidence,state="PENDING")
+            out.append({**row,**saved,"normalized_value":value,"source_partnumber":source_pn,"source_type":source_type,"confidence_rank":confidence})
         return out
 
     def _audit(self,pn:str,detail:dict[str,Any])->None:
@@ -81,6 +86,12 @@ class ProductIdentityResearchService:
         progress=progress or (lambda *_:None)
         pn=str(partnumber or "").strip().upper()
         if not pn: raise ValueError("partnumber is required")
+
+        # ProductWork transitions require every handler to leave
+        # LOADING_SOURCE_DATA through ANALYZING_MISSING_FIELDS before it may
+        # research or finish. This also keeps the already-verified fast path
+        # valid without touching the web.
+        progress("ANALYZING_MISSING_FIELDS",10)
         product=self.product_repository.get_by_partnumber(pn)
         if product is None: raise LookupError(f"product not found: {pn}")
         requested=[]
@@ -91,12 +102,12 @@ class ProductIdentityResearchService:
 
         verified={**self._direct(product),**self._approved(pn)}
         if verified:
-            result={"state":"COMPLETED","partnumber":pn,"verified_fields":verified,"promoted_fields":[],"conflicts":[],"sources_consulted":[],"error_code":None}
+            result={"state":"COMPLETED","result_code":"YA_VERIFICADO","partnumber":pn,"verified_fields":verified,"promoted_fields":[],"conflicts":[],"sources_consulted":[],"error_code":None}
             self._audit(pn,result); return result
 
         domains=self._brand_domains(product)
         if not domains:
-            result={"state":"PARTIAL","partnumber":pn,"verified_fields":{},"promoted_fields":[],"conflicts":[],"sources_consulted":[],"error_code":"NO_TRUSTED_IDENTITY_SOURCE"}
+            result={"state":"PARTIAL","result_code":"NO_VERIFIED_IDENTITY_FOUND","partnumber":pn,"verified_fields":{},"promoted_fields":[],"conflicts":[],"sources_consulted":[],"error_code":"NO_TRUSTED_IDENTITY_SOURCE"}
             self._audit(pn,result); return result
 
         progress("RESEARCHING",30)
@@ -111,7 +122,8 @@ class ProductIdentityResearchService:
                 document=self.source_document_service.ingest(hit.url,pn,"MANUFACTURER")
                 sources.append(hit.url)
                 extracted=self.fact_extractor.extract(document,requested,pn)
-                # Exact PN is mandatory for identity auto-promotion.
+                # Exact PN is mandatory for identity auto-promotion. Candidate
+                # persistence also enforces strong source type/confidence.
                 extracted=[row for row in extracted if str(row.get("source_partnumber") or "").strip().upper()==pn]
                 persisted.extend(self._persist_candidates(pn,extracted))
         except SearchProviderNotConfigured:
@@ -123,11 +135,11 @@ class ProductIdentityResearchService:
         conflicts=list(promotion.get("conflicts") or [])
         verified={**self._direct(product),**self._approved(pn)}
         if conflicts:
-            state="REVIEW_REQUIRED";error_code="IDENTITY_CONFLICT"
+            state="REVIEW_REQUIRED";result_code="REVIEW_REQUIRED";error_code="IDENTITY_CONFLICT"
         elif verified:
-            state="COMPLETED";error_code=None
+            state="COMPLETED";result_code="VERIFICADO";error_code=None
         else:
-            state="PARTIAL";error_code=search_error or "NO_VERIFIED_IDENTITY_FOUND"
+            state="PARTIAL";result_code="NO_VERIFIED_IDENTITY_FOUND";error_code=search_error or "NO_VERIFIED_IDENTITY_FOUND"
         progress("REBUILDING_PRODUCT_MASTER",95)
-        result={"state":state,"partnumber":pn,"verified_fields":verified,"promoted_fields":list((promotion.get("promoted") or {}).keys()),"conflicts":conflicts,"sources_consulted":sources,"error_code":error_code}
+        result={"state":state,"result_code":result_code,"partnumber":pn,"verified_fields":verified,"promoted_fields":list((promotion.get("promoted") or {}).keys()),"conflicts":conflicts,"sources_consulted":sources,"error_code":error_code}
         self._audit(pn,result);return result
