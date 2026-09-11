@@ -62,6 +62,7 @@ class ProductScanner:
                 for value in [
                     *(technical.get("missing_required") or []),
                     *(technical.get("missing_recommended") or []),
+                    *(technical.get("missing_identity") or []),
                 ]:
                     code = str(value or "").strip()
                     if code and code not in missing:
