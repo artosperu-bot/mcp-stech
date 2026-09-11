@@ -55,6 +55,31 @@ def test_workspace_v2_groups_master_technical_images_evidence_and_jobs():
     assert result["jobs"][0]["work_type"] == "RESEARCH_IMAGES"
 
 
+def test_workspace_v2_master_reuses_enriched_identity_from_canonical_known_fields():
+    class Technical:
+        def get(self, pn):
+            return {
+                "partnumber": pn,
+                "category_code": "LAPTOP",
+                "known_fields": {
+                    "ram_gb": 16,
+                    "ean": "0197528523880",
+                    "upc": "740617352214",
+                },
+                "identity": {"ean": "0197528523880", "upc": "740617352214", "gtin": None},
+                "missing_identity": [],
+                "missing_required": [],
+                "missing_recommended": [],
+                "completion_pct": 100,
+            }
+
+    result = _deps(Technical()).get("pn1")
+
+    assert result["master"]["ean"] == "0197528523880"
+    assert result["master"]["upc"] == "740617352214"
+    assert result["master"]["gtin"] is None
+
+
 def test_workspace_v2_keeps_images_available_when_category_schema_is_not_configured():
     class Technical:
         def get(self, pn):
