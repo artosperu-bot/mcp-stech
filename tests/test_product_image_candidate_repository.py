@@ -11,7 +11,9 @@ class Cursor:
     def execute(self, sql, *params):
         self.executions.append((sql, params))
         upper = sql.upper()
-        if "OUTPUT INSERTED.PRODUCT_IMAGE_CANDIDATE_ID" in upper:
+        if "WHERE PARTNUMBER = ? AND SOURCE_URL = ?" in upper:
+            self._fetchone = None
+        elif "OUTPUT INSERTED.PRODUCT_IMAGE_CANDIDATE_ID" in upper:
             self._fetchone = (7,)
         elif "FROM DBO.PRODUCT_IMAGE_CANDIDATE" in upper and "WHERE PRODUCT_IMAGE_CANDIDATE_ID = ?" in upper:
             self.description = [("product_image_candidate_id",), ("partnumber",), ("state",), ("source_url",)]
@@ -82,3 +84,38 @@ def test_list_and_state_validation():
         assert "invalid candidate state" in str(exc)
     else:
         raise AssertionError("expected ValueError")
+
+
+class ExistingCursor(Cursor):
+    def execute(self, sql, *params):
+        self.executions.append((sql, params))
+        upper = sql.upper()
+        if "WHERE PARTNUMBER = ? AND SOURCE_URL = ?" in upper:
+            self._fetchone = (9,)
+        elif "WHERE PRODUCT_IMAGE_CANDIDATE_ID = ?" in upper:
+            self.description = [("product_image_candidate_id",), ("partnumber",), ("state",), ("source_url",)]
+            self._fetchone = (9, "ABC-123", "PENDING", "https://example.com/a.jpg")
+        return self
+
+
+class ExistingConn(Conn):
+    def __init__(self):
+        self.cur = ExistingCursor()
+        self.commits = 0
+        self.rollbacks = 0
+        self.closed = 0
+
+
+def test_add_candidate_is_idempotent_for_same_partnumber_and_url():
+    conn = ExistingConn()
+    repo = ProductImageCandidateRepository(lambda: conn)
+    row = repo.add_candidate(
+        partnumber="ABC-123",
+        source_type="WEB_IMAGE",
+        source_url="https://example.com/a.jpg",
+    )
+    assert row["product_image_candidate_id"] == 9
+    assert not any(
+        "INSERT DBO.PRODUCT_IMAGE_CANDIDATE" in sql.upper()
+        for sql, _ in conn.cur.executions
+    )
