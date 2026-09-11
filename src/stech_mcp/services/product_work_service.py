@@ -16,6 +16,12 @@ _TECHNICAL_INPUT_KEYS = {
     "scope",
     "source_context",
 }
+_IDENTITY_INPUT_KEYS = {
+    "partnumber",
+    "requested_fields",
+    "scope",
+    "source_context",
+}
 _CONTEXT_KEYS = (
     "scope",
     "requirements_version",
@@ -85,17 +91,28 @@ class ProductWorkService:
 
             if normalized_work_type == "ENRICH_TECHNICAL":
                 item = {key: row[key] for key in _TECHNICAL_INPUT_KEYS if key in row}
+            elif normalized_work_type == "RESEARCH_IDENTITY":
+                # Identity work is deliberately isolated from commercial data.
+                # Persist only the exact PN plus identity research context so a
+                # caller cannot smuggle price/stock/publication mutations into
+                # this queue item even though those values would be ignored by
+                # the handler.
+                item = {key: row[key] for key in _IDENTITY_INPUT_KEYS if key in row}
             else:
                 item = dict(row)
             item["partnumber"] = pn
-            if category:
-                item["category_code"] = category
-            elif "category_code" in item:
+            if normalized_work_type == "RESEARCH_IDENTITY":
                 item.pop("category_code", None)
-            if channel:
-                item["channel_code"] = channel
-            elif "channel_code" in item:
                 item.pop("channel_code", None)
+            else:
+                if category:
+                    item["category_code"] = category
+                elif "category_code" in item:
+                    item.pop("category_code", None)
+                if channel:
+                    item["channel_code"] = channel
+                elif "channel_code" in item:
+                    item.pop("channel_code", None)
             item["context_hash"] = context_hash
             items.append(item)
 
