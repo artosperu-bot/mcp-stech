@@ -11,9 +11,18 @@ _TECHNICAL_INPUT_KEYS = {
     "category_code",
     "channel_code",
     "template_code",
+    "requirements_version",
     "requested_fields",
+    "scope",
     "source_context",
 }
+_CONTEXT_KEYS = (
+    "scope",
+    "requirements_version",
+    "template_code",
+    "requested_fields",
+    "image_target_count",
+)
 
 
 class ProductWorkService:
@@ -48,14 +57,28 @@ class ProductWorkService:
                 continue
             category = str(row.get("category_code") or "").strip().upper() or None
             channel = str(row.get("channel_code") or "").strip().upper() or None
-            context_hash = make_context_hash(normalized_work_type, pn, category, channel)
+            extra_context = {
+                key: row.get(key)
+                for key in _CONTEXT_KEYS
+                if row.get(key) not in (None, "", [])
+            }
+            context_hash = make_context_hash(
+                normalized_work_type,
+                pn,
+                category,
+                channel,
+                context=extra_context or None,
+            )
 
-            # Technical enrichment is a product-level action. If the same PN is
-            # repeated in one request, keep the first row/context instead of
-            # launching duplicate research merely because a later row omits a
-            # category/channel value. Other work types retain context-level
-            # deduplication.
-            dedupe_key = pn if normalized_work_type == "ENRICH_TECHNICAL" else context_hash
+            # Preserve legacy product-level technical deduplication when callers
+            # do not provide an explicit scope/target. New MASTER/CHANNEL jobs use
+            # their intent hash so two different gaps for one PN can coexist.
+            contextual = bool(extra_context or channel)
+            dedupe_key = (
+                pn
+                if normalized_work_type == "ENRICH_TECHNICAL" and not contextual
+                else context_hash
+            )
             if dedupe_key in seen:
                 continue
             seen.add(dedupe_key)
