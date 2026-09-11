@@ -15,6 +15,7 @@ from stech_mcp.background import BackgroundRuntime
 from stech_mcp.background_config import BackgroundConfig
 from stech_mcp.db.channel_draft_history_repository import ChannelDraftHistoryRepository
 from stech_mcp.db.channel_requirement_repository import ChannelRequirementRepository
+from stech_mcp.db.deltron_specification_repository import DeltronSpecificationRepository
 from stech_mcp.db.fact_candidate_repository import FactCandidateRepository
 from stech_mcp.db.product_image_candidate_repository import ProductImageCandidateRepository
 from stech_mcp.db.product_schema_repository import ProductSchemaRepository
@@ -28,6 +29,7 @@ from stech_mcp.services.budgeted_worker_factory import (
 )
 from stech_mcp.services.channel_draft_service import ChannelDraftService
 from stech_mcp.services.channel_gap_analyzer import ChannelGapAnalyzer
+from stech_mcp.services.deltron_fact_adapter import DeltronFactAdapter
 from stech_mcp.services.fact_extractor import FactExtractor
 from stech_mcp.services.fact_promotion import FactPromotionService
 from stech_mcp.services.multichannel_readiness import MultichannelReadinessService
@@ -72,11 +74,18 @@ product_work_tools = register_product_work_tools(
     namespace=_server,
 )
 
+# Deltron technical truth is read from the structured specification table.
+# PRD_PRODUCTO_DISTRIBUIDOR.atributos_json stays available to legacy consumers
+# but is not part of Product Workspace technical readiness.
+deltron_specification_repository = DeltronSpecificationRepository(_server.source_connection_factory)
+deltron_fact_adapter = DeltronFactAdapter()
 product_schema_repository = ProductSchemaRepository(_server.mcp_connection_factory)
 product_technical_status_service = ProductTechnicalStatusService(
     product_repository=_server.product_repository,
     enrichment_repository=_server.enrichment_repository,
     schema_repository=product_schema_repository,
+    deltron_specification_repository=deltron_specification_repository,
+    deltron_adapter=deltron_fact_adapter,
 )
 product_schema_tools = register_product_schema_tools(
     _server.mcp,
@@ -160,6 +169,7 @@ product_workspace_v2_service = ProductWorkspaceV2Service(
     image_candidate_repository=product_image_candidate_repository,
     fact_candidate_repository=fact_candidate_repository,
     work_repository=product_work_query_repository,
+    deltron_specification_repository=deltron_specification_repository,
 )
 
 background_config = BackgroundConfig.from_env()
