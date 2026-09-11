@@ -71,6 +71,57 @@ def test_status_returns_only_missing_technical_fields_and_approved_overrides_raw
     assert "stock" not in result["missing_required"]
     assert result["conflicts"] == []
     assert result["completion_pct"] == 50
+    assert result["missing_identity"] == ["ean", "upc", "gtin"]
+
+
+def test_status_reuses_approved_barcode_identity_and_keeps_technical_score_unchanged():
+    class BarcodeEnrichmentRepository(FakeEnrichmentRepository):
+        def get_approved(self, partnumber, field_codes=None):
+            rows = super().get_approved(partnumber, field_codes)
+            return [
+                *rows,
+                {
+                    "field_code": "ean",
+                    "value_text": "0197528523880",
+                    "value_number": None,
+                    "unit": None,
+                    "confidence_grade": "A1",
+                },
+            ]
+
+    service = ProductTechnicalStatusService(
+        product_repository=FakeProductRepository(),
+        enrichment_repository=BarcodeEnrichmentRepository(),
+        schema_repository=FakeSchemaRepository(),
+    )
+
+    result = service.get("PN1")
+
+    assert result["known_fields"]["ean"] == "0197528523880"
+    assert result["identity"]["ean"] == "0197528523880"
+    assert result["missing_identity"] == []
+    assert result["completion_pct"] == 50
+
+
+def test_status_uses_direct_product_barcode_before_researching_identity():
+    class ProductWithUpc(FakeProductRepository):
+        def get_by_partnumber(self, partnumber):
+            product = super().get_by_partnumber(partnumber)
+            product["upc"] = "740617352214"
+            return product
+
+    service = ProductTechnicalStatusService(
+        product_repository=ProductWithUpc(),
+        enrichment_repository=FakeEnrichmentRepository(),
+        schema_repository=FakeSchemaRepository(),
+    )
+
+    result = service.get("PN1")
+
+    assert result["identity"]["upc"] == "740617352214"
+    assert result["known_fields"]["upc"] == "740617352214"
+    assert result["missing_identity"] == []
+    assert result["completion_pct"] == 50
 
 
 def test_status_raises_when_product_does_not_exist():
