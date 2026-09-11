@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from typing import Any
 
 
 WORK_TYPES = {
@@ -90,8 +91,35 @@ def normalize_partnumber(value: str) -> str:
     return str(value or "").strip().upper()
 
 
-def _normalize_context_value(value: str | None) -> str:
+def _normalize_context_value(value: Any) -> str:
     return str(value or "").strip().upper()
+
+
+def _normalize_extra_context(context: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(context, dict):
+        return {}
+    output: dict[str, Any] = {}
+    for key in ("scope", "requirements_version", "template_code"):
+        value = _normalize_context_value(context.get(key))
+        if value:
+            output[key] = value
+
+    fields = context.get("requested_fields")
+    if isinstance(fields, list):
+        normalized_fields = sorted(
+            {
+                _normalize_context_value(value)
+                for value in fields
+                if _normalize_context_value(value)
+            }
+        )
+        if normalized_fields:
+            output["requested_fields"] = normalized_fields
+
+    image_target_count = context.get("image_target_count")
+    if image_target_count not in (None, ""):
+        output["image_target_count"] = int(image_target_count)
+    return output
 
 
 def make_context_hash(
@@ -99,13 +127,18 @@ def make_context_hash(
     partnumber: str,
     category_code: str | None,
     channel_code: str | None,
+    *,
+    context: dict[str, Any] | None = None,
 ) -> str:
-    payload = {
+    payload: dict[str, Any] = {
         "work_type": _normalize_context_value(work_type),
         "partnumber": normalize_partnumber(partnumber),
         "category_code": _normalize_context_value(category_code),
         "channel_code": _normalize_context_value(channel_code),
     }
+    extra = _normalize_extra_context(context)
+    if extra:
+        payload["context"] = extra
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
