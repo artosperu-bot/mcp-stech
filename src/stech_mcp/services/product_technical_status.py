@@ -71,6 +71,21 @@ class ProductTechnicalStatusService:
         self.product_repository = product_repository
         self.enrichment_repository = enrichment_repository
         self.schema_repository = schema_repository
+
+        # Real ProductRepository owns the DB_DISTRIBUIDORES connection factory.
+        # Auto-wiring keeps worker/runtime callers compatible while the
+        # authoritative server passes these dependencies explicitly.
+        if deltron_specification_repository is None:
+            connection_factory = getattr(product_repository, "_connection_factory", None)
+            if callable(connection_factory):
+                from stech_mcp.db.deltron_specification_repository import DeltronSpecificationRepository
+
+                deltron_specification_repository = DeltronSpecificationRepository(connection_factory)
+        if deltron_adapter is None and deltron_specification_repository is not None:
+            from stech_mcp.services.deltron_fact_adapter import DeltronFactAdapter
+
+            deltron_adapter = DeltronFactAdapter()
+
         self.deltron_specification_repository = deltron_specification_repository
         self.deltron_adapter = deltron_adapter
 
@@ -117,16 +132,15 @@ class ProductTechnicalStatusService:
         known_fields: dict[str, Any] = {}
         field_sources: dict[str, str] = {}
 
-        # Direct canonical product keys remain valid. Legacy atributos_json is
-        # never interpreted here.
+        # Only already-canonical product columns are accepted. The legacy
+        # atributos_json payload is deliberately ignored.
         for field_code in schema_fields:
             value = product.get(field_code)
             if _has_value(value):
                 known_fields[field_code] = value
                 field_sources[field_code] = "PRODUCT"
 
-        # Deltron's authoritative technical source is the structured
-        # PRD_DELTRON_ESPECIFICACION table, keyed by producto_distribuidor_id.
+        # Deltron technical truth comes from PRD_DELTRON_ESPECIFICACION.
         for candidate in self._deltron_candidates(product, category_code):
             field_code = normalize_field_code(candidate.get("field_code"))
             if field_code not in schema_fields:
@@ -136,9 +150,7 @@ class ProductTechnicalStatusService:
                 known_fields[field_code] = value
                 field_sources[field_code] = "DELTRON"
 
-        # Approved enrichment is canonical and has precedence over direct and
-        # Deltron values. Commercial fields cannot enter because only schema
-        # field codes are accepted.
+        # Approved enrichment has final precedence over Deltron/raw values.
         for row in self.enrichment_repository.get_approved(normalized_pn):
             field_code = normalize_field_code(row.get("field_code"))
             if field_code not in schema_fields:
