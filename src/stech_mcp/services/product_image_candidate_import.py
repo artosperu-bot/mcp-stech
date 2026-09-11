@@ -59,6 +59,16 @@ class ProductImageCandidateImportService:
             raise ValueError("invalid image dimensions")
         return digest, int(width), int(height), image_format
 
+    @staticmethod
+    def _existing_original(rows: list[dict[str, Any]], digest: str) -> dict[str, Any] | None:
+        for row in rows:
+            if str(row.get("sha256_hash") or "").strip().lower() != digest.lower():
+                continue
+            if str(row.get("variant_type") or "ORIGINAL").strip().upper() != "ORIGINAL":
+                continue
+            return dict(row)
+        return None
+
     def _product_path_context(self, partnumber: str) -> tuple[str | None, str | None]:
         if self.product_repository is None:
             return None, None
@@ -111,8 +121,22 @@ class ProductImageCandidateImportService:
         digest, width, height, image_format = self._inspect(response.content)
         extension = _FORMAT_EXT[image_format]
         current = list(self.image_repository.list_images(partnumber))
-        position = self._next_position(current)
 
+        duplicate = self._existing_original(current, digest)
+        if duplicate is not None:
+            self.candidate_repository.set_state(int(candidate_id), "IMPORTED")
+            return {
+                "found": True,
+                "candidate_id": int(candidate_id),
+                "partnumber": partnumber,
+                "state": "IMPORTED",
+                "deduplicated": True,
+                "position": int(duplicate.get("position") or 0) or None,
+                "storage_path": duplicate.get("storage_path"),
+                "image": duplicate,
+            }
+
+        position = self._next_position(current)
         target_dir = (
             self.root
             / _segment(brand, "UNKNOWN")
@@ -155,6 +179,7 @@ class ProductImageCandidateImportService:
             "candidate_id": int(candidate_id),
             "partnumber": partnumber,
             "state": "IMPORTED",
+            "deduplicated": False,
             "position": position,
             "storage_path": str(target_path),
             "image": stored,
