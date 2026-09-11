@@ -40,14 +40,18 @@ class EnrichTechnicalHandler:
         try:
             result=self.identity_service.research(partnumber,requested,progress)
         except LookupError as exc:
-            return {"status":"NO_DATA_FOUND","current_step":"product not found","error_code":"PRODUCT_NOT_FOUND","error_detail":str(exc)}
+            return {"status":"NO_DATA_FOUND","current_step":"PRODUCT_NOT_FOUND","error_code":"PRODUCT_NOT_FOUND","error_detail":str(exc)}
         except (TimeoutError,httpx.TimeoutException,httpx.TransportError) as exc:
             raise RetryableWorkError("TEMPORARY_IDENTITY_RESEARCH_ERROR",f"{type(exc).__name__}: {exc}") from exc
         state=str(result.get("state") or "").strip().upper()
-        if state=="COMPLETED": return {"status":"COMPLETED","current_step":"identity research completed"}
-        if state=="REVIEW_REQUIRED": return {"status":"REVIEW_REQUIRED","current_step":"identity review required","error_code":result.get("error_code") or "IDENTITY_CONFLICT","error_detail":"barcode identity requires review"}
-        if state=="PARTIAL": return {"status":"PARTIAL","current_step":"identity research partial","error_code":result.get("error_code"),"error_detail":"no verified exact barcode found yet"}
-        return {"status":"FAILED","current_step":"invalid identity result","error_code":"INVALID_IDENTITY_RESEARCH_STATE","error_detail":f"unsupported identity research state: {state or '<empty>'}"}
+        result_code=str(result.get("result_code") or "").strip().upper()
+        if state=="COMPLETED":
+            return {"status":"COMPLETED","current_step":result_code or "VERIFICADO"}
+        if state=="REVIEW_REQUIRED":
+            return {"status":"REVIEW_REQUIRED","current_step":result_code or "REVIEW_REQUIRED","error_code":result.get("error_code") or "IDENTITY_CONFLICT","error_detail":"barcode identity requires review"}
+        if state=="PARTIAL":
+            return {"status":"PARTIAL","current_step":result_code or "NO_VERIFIED_IDENTITY_FOUND","error_code":result.get("error_code"),"error_detail":"no verified exact barcode found yet"}
+        return {"status":"FAILED","current_step":"INVALID_IDENTITY_RESEARCH_STATE","error_code":"INVALID_IDENTITY_RESEARCH_STATE","error_detail":f"unsupported identity research state: {state or '<empty>'}"}
 
     def __call__(self, item: dict[str, Any], progress: Any) -> dict[str, Any]:
         if str(item.get("work_type") or "").strip().upper()=="RESEARCH_IDENTITY":
