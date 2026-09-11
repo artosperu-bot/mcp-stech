@@ -84,7 +84,7 @@ def _barcode(text: str, field_code: str) -> tuple[str, Any] | None:
         "gtin": r"GTIN(?:[- ]?(?:8|12|13|14))?|BARCODE|C[ÓO]DIGO\s+DE\s+BARRAS",
     }
     label = labels[field_code]
-    pattern = rf"\b(?:{label})\b\s*[:#\-]?\s*((?:\d[\s-]?){7,13}\d)"
+    pattern = rf"\b(?:{label})\b\s*[:#\-]?\s*((?:\d[\s-]?){{7,13}}\d)"
     matches: list[tuple[str, str]] = []
     for match in re.finditer(pattern, text, re.I):
         raw = match.group(0).strip(" ,;:.()[]")
