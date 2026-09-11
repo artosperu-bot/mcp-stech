@@ -15,6 +15,7 @@ def _pending_fields(snapshot: dict[str, Any], requested_fields: list[str] | None
         for value in [
             *(snapshot.get("missing_required") or []),
             *(snapshot.get("missing_recommended") or []),
+            *(snapshot.get("missing_identity") or []),
         ]
         if normalize_field_code(value)
     ]
@@ -33,7 +34,7 @@ def _pending_fields(snapshot: dict[str, Any], requested_fields: list[str] | None
 
 
 class ProductEnrichmentEngine:
-    """Channel-neutral technical enrichment orchestrator.
+    """Channel-neutral technical and identity enrichment orchestrator.
 
     Facts are stored through candidate/promotion services only. This engine does
     not call marketplace publishing, ProductPrepare/Coolbox, price or stock writes.
@@ -64,11 +65,7 @@ class ProductEnrichmentEngine:
         self.fact_extractor = fact_extractor
         self.audit_repository = audit_repository
 
-    def _persist_candidates(
-        self,
-        partnumber: str,
-        candidates: list[dict[str, Any]],
-    ) -> list[dict[str, Any]]:
+    def _persist_candidates(self, partnumber: str, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
         persisted: list[dict[str, Any]] = []
         for candidate in candidates:
             field_code = normalize_field_code(candidate.get("field_code"))
@@ -92,23 +89,12 @@ class ProductEnrichmentEngine:
                 confidence_rank=str(candidate.get("confidence_rank") or "").upper(),
                 state="PENDING",
             )
-            persisted.append({
-                **candidate,
-                **saved,
-                "field_code": field_code,
-                "evidence_text": evidence_text,
-            })
+            persisted.append({**candidate, **saved, "field_code": field_code, "evidence_text": evidence_text})
         return persisted
 
     @staticmethod
     def _promotable(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        # Existing verifier requires auditable URL + evidence. Distributor facts
-        # without a product-specific URL remain candidates and never get a fake URL.
-        return [
-            candidate
-            for candidate in candidates
-            if candidate.get("source_url") and candidate.get("evidence_text")
-        ]
+        return [candidate for candidate in candidates if candidate.get("source_url") and candidate.get("evidence_text")]
 
     def _audit(self, partnumber: str, detail: dict[str, Any]) -> None:
         if self.audit_repository is None:
@@ -146,9 +132,6 @@ class ProductEnrichmentEngine:
         conflicts: list[dict[str, Any]] = []
         sources_consulted: list[str] = []
 
-        # First exploit local distributor data. It is always persisted as
-        # candidate evidence; it is promoted only when it already carries a
-        # real auditable URL/evidence contract.
         deltron_candidates = self.deltron_adapter.adapt(product, category_code=category)
         local_persisted = self._persist_candidates(pn, deltron_candidates)
         local_promotable = self._promotable(local_persisted)
@@ -212,25 +195,16 @@ class ProductEnrichmentEngine:
         try:
             for query in research_plan:
                 results = self.search_provider.search(query.query, domains=query.domains, limit=5)
-                # Avoid repeatedly ingesting the same URL for the same field.
                 for result in results[:3]:
                     url_key = (query.field_code, result.url)
                     if url_key in seen_urls:
                         continue
                     seen_urls.add(url_key)
                     progress("READING_DOCUMENTS", 50)
-                    document = self.source_document_service.ingest(
-                        result.url,
-                        pn,
-                        query.stage,
-                    )
+                    document = self.source_document_service.ingest(result.url, pn, query.stage)
                     if result.url not in sources_consulted:
                         sources_consulted.append(result.url)
-                    extracted = self.fact_extractor.extract(
-                        document,
-                        [query.field_code],
-                        pn,
-                    )
+                    extracted = self.fact_extractor.extract(document, [query.field_code], pn)
                     researched_candidates.extend(self._persist_candidates(pn, extracted))
                     progress("RESEARCHING", 60)
         except SearchProviderNotConfigured:
