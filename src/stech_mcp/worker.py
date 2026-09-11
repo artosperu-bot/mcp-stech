@@ -9,8 +9,11 @@ from typing import Any, Callable
 
 from stech_mcp.config import Settings
 from stech_mcp.db.connection import make_mcp_connection_factory, make_source_connection_factory
+from stech_mcp.db.deltron_image_repository import DeltronImageRepository
 from stech_mcp.db.enrichment_repository import EnrichmentRepository
 from stech_mcp.db.fact_candidate_repository import FactCandidateRepository
+from stech_mcp.db.product_image_candidate_repository import ProductImageCandidateRepository
+from stech_mcp.db.product_image_repository import ProductImageRepository
 from stech_mcp.db.product_master_repository import ProductMasterRepository
 from stech_mcp.db.product_repository import ProductRepository
 from stech_mcp.db.product_schema_repository import ProductSchemaRepository
@@ -20,8 +23,12 @@ from stech_mcp.services.deltron_fact_adapter import DeltronFactAdapter
 from stech_mcp.services.fact_extractor import FactExtractor
 from stech_mcp.services.fact_promotion import FactPromotionService
 from stech_mcp.services.handlers.enrich_technical import EnrichTechnicalHandler
+from stech_mcp.services.handlers.research_images import ResearchImagesHandler
+from stech_mcp.services.local_image_sync import LocalImageSyncService
 from stech_mcp.services.product_enrichment_engine import ProductEnrichmentEngine
 from stech_mcp.services.product_field_verification import ProductFieldVerificationService
+from stech_mcp.services.product_image_readiness import ProductImageReadinessService
+from stech_mcp.services.product_image_research import ProductImageResearchService
 from stech_mcp.services.product_technical_status import ProductTechnicalStatusService
 from stech_mcp.services.product_work_dispatcher import (
     PermanentWorkError,
@@ -29,6 +36,7 @@ from stech_mcp.services.product_work_dispatcher import (
     RetryableWorkError,
     UnsupportedWorkTypeError,
 )
+from stech_mcp.services.research.brave_image_search_provider import BraveImageSearchProvider
 from stech_mcp.services.research.brave_search_provider import BraveSearchProvider
 from stech_mcp.services.research.research_planner import ResearchPlanner
 from stech_mcp.services.source_document_service import SourceDocumentService
@@ -272,10 +280,10 @@ class ProductWorkWorker:
                 self.sleep_fn(self.poll_seconds)
 
 
-def build_worker_from_environment() -> ProductWorkWorker:
+def build_worker_from_environment(worker_suffix: str | None = None) -> ProductWorkWorker:
     concurrency = int(os.getenv("STECH_WORKER_CONCURRENCY", "1"))
     if concurrency != 1:
-        raise ValueError("Product Work V2 supports STECH_WORKER_CONCURRENCY=1 only")
+        raise ValueError("Each Product Work V2 worker supports STECH_WORKER_CONCURRENCY=1 only")
 
     settings = Settings()
     mcp_connection_factory = make_mcp_connection_factory(settings)
@@ -286,8 +294,15 @@ def build_worker_from_environment() -> ProductWorkWorker:
     enrichment_repository = EnrichmentRepository(mcp_connection_factory)
     schema_repository = ProductSchemaRepository(mcp_connection_factory)
     candidate_repository = FactCandidateRepository(mcp_connection_factory)
+    image_candidate_repository = ProductImageCandidateRepository(mcp_connection_factory)
     source_document_repository = SourceDocumentRepository(mcp_connection_factory)
     audit_repository = ProductMasterRepository(mcp_connection_factory)
+    deltron_image_repository = DeltronImageRepository(source_connection_factory)
+    product_image_repository = ProductImageRepository(mcp_connection_factory)
+    local_image_sync_service = LocalImageSyncService(
+        root=settings.stech_image_root,
+        repository=product_image_repository,
+    )
 
     technical_status_service = ProductTechnicalStatusService(
         product_repository=product_repository,
@@ -322,9 +337,31 @@ def build_worker_from_environment() -> ProductWorkWorker:
     )
     enrichment_handler = EnrichTechnicalHandler(enrichment_engine)
 
+    image_readiness_service = ProductImageReadinessService(
+        product_repository=product_repository,
+        source_image_repository=deltron_image_repository,
+        workspace_image_repository=product_image_repository,
+        policy_repository=image_candidate_repository,
+    )
+    image_search_provider = BraveImageSearchProvider(
+        api_key=os.getenv("STECH_BRAVE_SEARCH_API_KEY", ""),
+        country=os.getenv("STECH_SEARCH_COUNTRY", "PE"),
+        search_lang=os.getenv("STECH_SEARCH_LANG", "es"),
+    )
+    image_research_service = ProductImageResearchService(
+        product_repository=product_repository,
+        local_image_sync_service=local_image_sync_service,
+        readiness_service=image_readiness_service,
+        candidate_repository=image_candidate_repository,
+        search_provider=image_search_provider,
+    )
+    image_handler = ResearchImagesHandler(image_research_service)
+
     dispatcher = ProductWorkDispatcher()
     dispatcher.register("ENRICH_TECHNICAL", enrichment_handler)
-    worker_id = f"{socket.gethostname()}:{os.getpid()}"
+    dispatcher.register("RESEARCH_IMAGES", image_handler)
+    suffix = str(worker_suffix or "").strip()
+    worker_id = f"{socket.gethostname()}:{os.getpid()}" + (f":{suffix}" if suffix else "")
     return ProductWorkWorker(
         repository,
         dispatcher,
