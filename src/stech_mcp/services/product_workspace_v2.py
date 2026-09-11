@@ -15,6 +15,7 @@ class ProductWorkspaceV2Service:
         image_candidate_repository: Any,
         fact_candidate_repository: Any,
         work_repository: Any,
+        deltron_specification_repository: Any | None = None,
     ) -> None:
         self.product_repository = product_repository
         self.technical_status_service = technical_status_service
@@ -22,6 +23,7 @@ class ProductWorkspaceV2Service:
         self.image_candidate_repository = image_candidate_repository
         self.fact_candidate_repository = fact_candidate_repository
         self.work_repository = work_repository
+        self.deltron_specification_repository = deltron_specification_repository
 
     @staticmethod
     def _fallback_category(product: dict[str, Any]) -> str | None:
@@ -31,6 +33,20 @@ class ProductWorkspaceV2Service:
                 return value
         return None
 
+    def _deltron_specifications(self, product: dict[str, Any]) -> list[dict[str, Any]]:
+        if self.deltron_specification_repository is None:
+            return []
+        product_id = product.get("producto_distribuidor_id")
+        if product_id in (None, ""):
+            return []
+        try:
+            product_id_int = int(product_id)
+        except (TypeError, ValueError):
+            return []
+        if product_id_int <= 0:
+            return []
+        return list(self.deltron_specification_repository.list_for_product(product_id_int))
+
     def get(self, partnumber: str) -> dict[str, Any]:
         pn = str(partnumber or "").strip().upper()
         if not pn:
@@ -38,6 +54,8 @@ class ProductWorkspaceV2Service:
         product = self.product_repository.get_by_partnumber(pn)
         if product is None:
             return {"found": False, "partnumber": pn}
+
+        deltron_specifications = self._deltron_specifications(product)
 
         try:
             technical = self.technical_status_service.get(pn)
@@ -48,6 +66,7 @@ class ProductWorkspaceV2Service:
                 "category_code": category,
                 "state": "NOT_CONFIGURED",
                 "known_fields": {},
+                "field_sources": {},
                 "missing_required": [],
                 "missing_recommended": [],
                 "conflicts": [],
@@ -73,6 +92,7 @@ class ProductWorkspaceV2Service:
 
         master = {
             "partnumber": pn,
+            "producto_distribuidor_id": product.get("producto_distribuidor_id"),
             "brand": product.get("marca") or product.get("brand"),
             "model": product.get("modelo") or product.get("model"),
             "name": product.get("nombre") or product.get("name") or product.get("product_name"),
@@ -87,6 +107,11 @@ class ProductWorkspaceV2Service:
             "partnumber": pn,
             "master": master,
             "technical": technical,
+            "deltron_specifications": {
+                "source": "dbo.PRD_DELTRON_ESPECIFICACION",
+                "count": len(deltron_specifications),
+                "items": deltron_specifications,
+            },
             "images": {
                 "readiness": image_readiness,
                 "candidate_count": len(image_candidates),
