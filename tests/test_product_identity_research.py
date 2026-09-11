@@ -77,6 +77,18 @@ def test_missing_ean_uses_only_known_official_brand_domain_and_promotes_exact_pn
     assert progress[-1]==("REBUILDING_PRODUCT_MASTER",95)
 
 
+def test_off_domain_hit_is_not_treated_as_manufacturer_evidence():
+    svc=build(
+        {"part_number":"PN1","marca":"LENOVO","ean":None,"upc":None},
+        [SearchResult("Marketplace result","https://market.example/pn1","PN1 EAN: 4006381333931")],
+    )
+    out=svc.research("PN1")
+    assert out["state"]=="PARTIAL"
+    assert out["result_code"]=="NO_VERIFIED_IDENTITY_FOUND"
+    assert out["verified_fields"]=={}
+    assert out["sources_consulted"]==[]
+
+
 def test_unknown_brand_does_not_broad_search_or_fake_success():
     svc=build({"part_number":"PN1","marca":"UNKNOWN","ean":None,"upc":None},[SearchResult("Random","https://market.example/pn1","x")])
     out=svc.research("PN1")
