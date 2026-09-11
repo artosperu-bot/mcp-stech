@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Callable
+from urllib.parse import urlparse
 
 from stech_mcp.services.identity_barcode_extractor import validate_gtin
 from stech_mcp.services.research.search_provider import SearchProviderNotConfigured
@@ -21,6 +22,12 @@ def _row_value(row: dict[str,Any]) -> Any:
     if row.get("value_text") not in (None,""): return row.get("value_text")
     if row.get("value_number") is not None: return row.get("value_number")
     return row.get("value")
+
+
+def _url_matches_domains(url:str,domains:tuple[str,...])->bool:
+    host=str(urlparse(str(url or "")).hostname or "").strip().lower().rstrip(".")
+    if not host:return False
+    return any(host==domain.lower() or host.endswith("."+domain.lower()) for domain in domains)
 
 
 class ProductIdentityResearchService:
@@ -118,7 +125,12 @@ class ProductIdentityResearchService:
             query=f'"{pn}" EAN UPC GTIN'
             for hit in self.search_provider.search(query,domains=domains,limit=8)[:5]:
                 if hit.url in seen: continue
-                seen.add(hit.url);progress("READING_DOCUMENTS",50)
+                seen.add(hit.url)
+                # Do not trust the provider filter blindly. Auto-promotion is
+                # possible only when the returned URL itself belongs to a known
+                # official domain for the exact product brand.
+                if not _url_matches_domains(hit.url,domains): continue
+                progress("READING_DOCUMENTS",50)
                 document=self.source_document_service.ingest(hit.url,pn,"MANUFACTURER")
                 sources.append(hit.url)
                 extracted=self.fact_extractor.extract(document,requested,pn)
