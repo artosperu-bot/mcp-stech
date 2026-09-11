@@ -13,11 +13,15 @@ import os
 from stech_mcp import server as _server
 from stech_mcp.background import BackgroundRuntime
 from stech_mcp.background_config import BackgroundConfig
+from stech_mcp.db.channel_requirement_repository import ChannelRequirementRepository
 from stech_mcp.db.fact_candidate_repository import FactCandidateRepository
 from stech_mcp.db.product_image_candidate_repository import ProductImageCandidateRepository
 from stech_mcp.db.product_schema_repository import ProductSchemaRepository
 from stech_mcp.db.product_work_control_repository import ProductWorkControlRepository
+from stech_mcp.db.product_work_query_repository import ProductWorkQueryRepository
 from stech_mcp.db.source_document_repository import SourceDocumentRepository
+from stech_mcp.services.channel_draft_service import ChannelDraftService
+from stech_mcp.services.channel_gap_analyzer import ChannelGapAnalyzer
 from stech_mcp.services.fact_extractor import FactExtractor
 from stech_mcp.services.fact_promotion import FactPromotionService
 from stech_mcp.services.multichannel_readiness import MultichannelReadinessService
@@ -26,6 +30,7 @@ from stech_mcp.services.product_image_research import ProductImageResearchServic
 from stech_mcp.services.product_scanner import ProductScanner
 from stech_mcp.services.product_technical_status import ProductTechnicalStatusService
 from stech_mcp.services.product_work_service import ProductWorkService
+from stech_mcp.services.product_workspace_v2 import ProductWorkspaceV2Service
 from stech_mcp.services.research.brave_image_search_provider import BraveImageSearchProvider
 from stech_mcp.services.research.research_planner import ResearchPlanner
 from stech_mcp.services.source_document_service import SourceDocumentService
@@ -44,16 +49,13 @@ vtex_image_sync_service = VtexImageSyncService(
     signer=_server.image_signer,
     audit_repository=_server.product_master_repository,
 )
-
-# Existing MCP tool functions resolve these module globals at call time. Only
-# authoritative VTEX image behavior is swapped; no other legacy tool is replaced.
 _server.vtex_image_sync_service = vtex_image_sync_service
 _server.vtex_image_batch_service.sync_service = vtex_image_sync_service
 _server.product_loader_orchestrator.vtex_image_sync_service = vtex_image_sync_service
 
-# Product Work V2 is additive and uses its own tables/repository. It does not
-# replace product_loader_job or any existing VTEX service.
+# One persistent Product Work queue for manual and background work.
 product_work_repository = ProductWorkControlRepository(_server.mcp_connection_factory)
+product_work_query_repository = ProductWorkQueryRepository(_server.mcp_connection_factory)
 product_work_service = ProductWorkService(
     product_work_repository,
     max_attempts=int(os.getenv("STECH_WORKER_MAX_ATTEMPTS", "3")),
@@ -64,8 +66,6 @@ product_work_tools = register_product_work_tools(
     namespace=_server,
 )
 
-# Canonical technical schemas are additive. They reuse the existing V8 product
-# repository and approved enrichment repository without changing them.
 product_schema_repository = ProductSchemaRepository(_server.mcp_connection_factory)
 product_technical_status_service = ProductTechnicalStatusService(
     product_repository=_server.product_repository,
@@ -79,13 +79,9 @@ product_schema_tools = register_product_schema_tools(
     namespace=_server,
 )
 
-# Research/audit V2 uses candidate/evidence tables and the existing verified
-# enrichment write path. Promotion never writes directly to product_enrichment.
 fact_candidate_repository = FactCandidateRepository(_server.mcp_connection_factory)
 source_document_repository = SourceDocumentRepository(_server.mcp_connection_factory)
-source_document_service = SourceDocumentService(
-    document_repository=source_document_repository,
-)
+source_document_service = SourceDocumentService(document_repository=source_document_repository)
 fact_promotion_service = FactPromotionService(
     verification_service=_server.product_field_verification_service,
     enrichment_repository=_server.enrichment_repository,
@@ -109,11 +105,9 @@ product_research_tools = register_product_research_tools(
     namespace=_server,
 )
 
-# First-class image readiness/research. Web results stay as candidates; the
-# research path never publishes to VTEX or silently approves an ambiguous image.
-product_image_candidate_repository = ProductImageCandidateRepository(
-    _server.mcp_connection_factory
-)
+# Images are a first-class Product Workspace dimension. External search only
+# creates evidence candidates; it never publishes or silently approves ambiguity.
+product_image_candidate_repository = ProductImageCandidateRepository(_server.mcp_connection_factory)
 product_image_readiness_service = ProductImageReadinessService(
     product_repository=_server.product_repository,
     source_image_repository=_server.deltron_image_repository,
@@ -131,6 +125,26 @@ product_image_research_service = ProductImageResearchService(
     readiness_service=product_image_readiness_service,
     candidate_repository=product_image_candidate_repository,
     search_provider=product_image_search_provider,
+)
+
+# Channel requirements are versioned and stay separate from product truth.
+channel_requirement_repository = ChannelRequirementRepository(_server.mcp_connection_factory)
+channel_gap_analyzer = ChannelGapAnalyzer(
+    requirement_repository=channel_requirement_repository,
+    technical_status_service=product_technical_status_service,
+    image_readiness_service=product_image_readiness_service,
+)
+channel_draft_service = ChannelDraftService(
+    gap_analyzer=channel_gap_analyzer,
+    draft_repository=_server.product_master_repository,
+)
+product_workspace_v2_service = ProductWorkspaceV2Service(
+    product_repository=_server.product_repository,
+    technical_status_service=product_technical_status_service,
+    image_readiness_service=product_image_readiness_service,
+    image_candidate_repository=product_image_candidate_repository,
+    fact_candidate_repository=fact_candidate_repository,
+    work_repository=product_work_query_repository,
 )
 
 background_config = BackgroundConfig.from_env()
@@ -158,6 +172,9 @@ product_workspace_v2_tools = register_product_workspace_v2_tools(
     image_readiness_service=product_image_readiness_service,
     image_research_service=product_image_research_service,
     candidate_repository=product_image_candidate_repository,
+    channel_gap_analyzer=channel_gap_analyzer,
+    channel_draft_service=channel_draft_service,
+    workspace_service=product_workspace_v2_service,
     namespace=_server,
 )
 
@@ -166,8 +183,7 @@ settings = _server.settings
 
 
 def main() -> None:
-    # Threads are started only from the executable entry point, never at import
-    # time. This keeps tests/imports deterministic while production can run 24/7.
+    # Start only from the official executable entry point, never at import time.
     if background_config.background_enabled and background_config.scanner_enabled:
         background_runtime.start()
     _server.main()
