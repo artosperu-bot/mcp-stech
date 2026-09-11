@@ -35,8 +35,9 @@ def _pending_fields(snapshot: dict[str, Any], requested_fields: list[str] | None
 class ProductEnrichmentEngine:
     """Channel-neutral technical enrichment orchestrator.
 
-    Facts are stored through candidate/promotion services only. This engine does
-    not call marketplace publishing, ProductPrepare/Coolbox, price or stock writes.
+    ProductTechnicalStatusService already incorporates structured Deltron facts
+    from PRD_DELTRON_ESPECIFICACION. This engine researches only fields that
+    remain missing after that local source has been applied.
     """
 
     def __init__(
@@ -44,7 +45,7 @@ class ProductEnrichmentEngine:
         *,
         product_repository: Any,
         technical_status_service: Any,
-        deltron_adapter: Any,
+        deltron_adapter: Any | None,
         candidate_repository: Any,
         promotion_service: Any,
         research_planner: Any,
@@ -55,6 +56,9 @@ class ProductEnrichmentEngine:
     ) -> None:
         self.product_repository = product_repository
         self.technical_status_service = technical_status_service
+        # Kept as a compatibility constructor argument while callers migrate.
+        # It is deliberately not used here: Deltron facts belong to technical
+        # status and come only from PRD_DELTRON_ESPECIFICACION.
         self.deltron_adapter = deltron_adapter
         self.candidate_repository = candidate_repository
         self.promotion_service = promotion_service
@@ -102,8 +106,6 @@ class ProductEnrichmentEngine:
 
     @staticmethod
     def _promotable(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        # Existing verifier requires auditable URL + evidence. Distributor facts
-        # without a product-specific URL remain candidates and never get a fake URL.
         return [
             candidate
             for candidate in candidates
@@ -137,6 +139,8 @@ class ProductEnrichmentEngine:
         if product is None:
             raise LookupError(f"product not found: {pn}")
 
+        # This snapshot already contains structured Deltron specifications plus
+        # approved enrichments. Legacy atributos_json is not consulted.
         before = self.technical_status_service.get(pn)
         category = normalize_category_code(category_code or before.get("category_code"))
         if not category:
@@ -146,56 +150,23 @@ class ProductEnrichmentEngine:
         conflicts: list[dict[str, Any]] = []
         sources_consulted: list[str] = []
 
-        # First exploit local distributor data. It is always persisted as
-        # candidate evidence; it is promoted only when it already carries a
-        # real auditable URL/evidence contract.
-        deltron_candidates = self.deltron_adapter.adapt(product, category_code=category)
-        local_persisted = self._persist_candidates(pn, deltron_candidates)
-        local_promotable = self._promotable(local_persisted)
-        if local_promotable:
-            local_result = self.promotion_service.evaluate_and_promote(pn, local_promotable)
-            promoted_fields.update(local_result.get("promoted") or {})
-            conflicts.extend(local_result.get("conflicts") or [])
-
         progress("ANALYZING_MISSING_FIELDS", 20)
-        after_local = self.technical_status_service.get(pn)
-        pending = _pending_fields(after_local, requested_fields)
-
-        if conflicts:
-            progress("REBUILDING_PRODUCT_MASTER", 95)
-            after = self.technical_status_service.get(pn)
-            self._audit(pn, {
-                "state": "REVIEW_REQUIRED",
-                "category_code": category,
-                "promoted_fields": list(promoted_fields),
-                "remaining_fields": _pending_fields(after, requested_fields),
-                "conflicts": conflicts,
-            })
-            return {
-                "state": "REVIEW_REQUIRED",
-                "before": before,
-                "after": after,
-                "promoted_fields": list(promoted_fields),
-                "remaining_fields": _pending_fields(after, requested_fields),
-                "conflicts": conflicts,
-                "sources_consulted": sources_consulted,
-                "error_code": "FACT_CONFLICT",
-            }
+        pending = _pending_fields(before, requested_fields)
 
         if not pending:
             progress("REBUILDING_PRODUCT_MASTER", 95)
-            after = after_local
+            after = before
             self._audit(pn, {
                 "state": "COMPLETED",
                 "category_code": category,
-                "promoted_fields": list(promoted_fields),
+                "promoted_fields": [],
                 "remaining_fields": [],
             })
             return {
                 "state": "COMPLETED",
                 "before": before,
                 "after": after,
-                "promoted_fields": list(promoted_fields),
+                "promoted_fields": [],
                 "remaining_fields": [],
                 "conflicts": [],
                 "sources_consulted": [],
@@ -212,7 +183,6 @@ class ProductEnrichmentEngine:
         try:
             for query in research_plan:
                 results = self.search_provider.search(query.query, domains=query.domains, limit=5)
-                # Avoid repeatedly ingesting the same URL for the same field.
                 for result in results[:3]:
                     url_key = (query.field_code, result.url)
                     if url_key in seen_urls:
