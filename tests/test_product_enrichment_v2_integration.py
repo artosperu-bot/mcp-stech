@@ -178,7 +178,11 @@ def schema(category, field_code, value_type="TEXT", *, variant_sensitive=False):
 
 
 def build_engine(product, category_schema, source_texts, urls):
-    product_repository = MemoryProductRepository({product["part_number"]: product})
+    # These tests exercise technical research only. Seed a known valid product
+    # identity so the new master-identity gap does not change their scope.
+    seeded_product = {**product}
+    seeded_product.setdefault("ean", "0197528523880")
+    product_repository = MemoryProductRepository({product["part_number"]: seeded_product})
     enrichment_repository = MemoryEnrichmentRepository()
     schema_repository = MemorySchemaRepository({product["category_code"]: [category_schema]})
     technical_status = ProductTechnicalStatusService(

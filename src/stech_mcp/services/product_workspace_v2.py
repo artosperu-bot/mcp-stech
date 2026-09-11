@@ -48,6 +48,12 @@ class ProductWorkspaceV2Service:
                 "category_code": category,
                 "state": "NOT_CONFIGURED",
                 "known_fields": {},
+                "identity": {
+                    "ean": product.get("ean"),
+                    "upc": product.get("upc"),
+                    "gtin": product.get("gtin"),
+                },
+                "missing_identity": [],
                 "missing_required": [],
                 "missing_recommended": [],
                 "conflicts": [],
@@ -70,14 +76,17 @@ class ProductWorkspaceV2Service:
             for row in fact_candidates
             if str(row.get("state") or "").strip().upper() == "CONFLICT"
         ]
+        known = dict(technical.get("known_fields") or {})
+        identity = dict(technical.get("identity") or {})
 
         master = {
             "partnumber": pn,
             "brand": product.get("marca") or product.get("brand"),
             "model": product.get("modelo") or product.get("model"),
             "name": product.get("nombre") or product.get("name") or product.get("product_name"),
-            "ean": product.get("ean"),
-            "upc": product.get("upc"),
+            "ean": product.get("ean") or identity.get("ean") or known.get("ean"),
+            "upc": product.get("upc") or identity.get("upc") or known.get("upc"),
+            "gtin": product.get("gtin") or identity.get("gtin") or known.get("gtin"),
             "mini_codigo": product.get("mini_codigo") or product.get("minicodigo"),
             "category_code": category,
             "distributor": product.get("distribuidor") or product.get("distributor"),

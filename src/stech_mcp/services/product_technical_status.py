@@ -6,6 +6,7 @@ from stech_mcp.domain.product_schema import normalize_category_code, normalize_f
 
 
 _SUPPORTED_CATEGORIES = {"LAPTOP", "PORTABLE_SPEAKER", "HEADPHONES"}
+_IDENTITY_BARCODE_FIELDS = ("ean", "upc", "gtin")
 _CATEGORY_KEYS = (
     "category_code",
     "categoria_code",
@@ -86,24 +87,39 @@ class ProductTechnicalStatusService:
 
         schema_fields = {item.field_code for item in schema}
         known_fields: dict[str, Any] = {}
+        identity: dict[str, Any] = {field_code: None for field_code in _IDENTITY_BARCODE_FIELDS}
 
         # Only accept already-canonical direct product keys here. Deltron
         # atributos_json is deliberately not interpreted until the dedicated
-        # adapter/normalizers layer (Plan B Task 3).
+        # adapter/normalizers layer.
         for field_code in schema_fields:
             value = product.get(field_code)
             if _has_value(value):
                 known_fields[field_code] = value
 
-        # Approved enrichment is canonical and has precedence over raw/direct
-        # values. Commercial fields are impossible here because only schema
-        # field codes are accepted.
+        # Barcode identity is channel-neutral product knowledge. Keep it beside
+        # technical known_fields so Channel Gap can reuse the same canonical
+        # value, but do not include it in the technical completion denominator.
+        for field_code in _IDENTITY_BARCODE_FIELDS:
+            value = product.get(field_code)
+            if _has_value(value):
+                identity[field_code] = str(value).strip()
+                known_fields[field_code] = identity[field_code]
+
+        # Approved enrichment has precedence over raw/direct values. Technical
+        # schema fields and the small channel-neutral identity set are accepted;
+        # commercial fields remain excluded.
         for row in self.enrichment_repository.get_approved(normalized_pn):
             field_code = normalize_field_code(row.get("field_code"))
-            if field_code not in schema_fields:
+            if field_code not in schema_fields and field_code not in _IDENTITY_BARCODE_FIELDS:
                 continue
             value = _approved_value(row)
-            if _has_value(value):
+            if not _has_value(value):
+                continue
+            if field_code in _IDENTITY_BARCODE_FIELDS:
+                identity[field_code] = str(value).strip()
+                known_fields[field_code] = identity[field_code]
+            else:
                 known_fields[field_code] = value
 
         missing_required = [
@@ -116,6 +132,11 @@ class ProductTechnicalStatusService:
             for item in schema
             if item.requirement == "RECOMMENDED" and item.field_code not in known_fields
         ]
+        # For product identity, any valid canonical barcode already known is
+        # enough to avoid repeated web research. When none exists, research all
+        # common GS1 labels and promote only strong exact-PN evidence.
+        missing_identity = [] if any(_has_value(identity[field]) for field in _IDENTITY_BARCODE_FIELDS) else list(_IDENTITY_BARCODE_FIELDS)
+
         completed = sum(1 for item in schema if item.field_code in known_fields)
         completion_pct = round((completed / len(schema)) * 100) if schema else 0
 
@@ -123,6 +144,8 @@ class ProductTechnicalStatusService:
             "partnumber": normalized_pn,
             "category_code": category_code,
             "known_fields": known_fields,
+            "identity": identity,
+            "missing_identity": missing_identity,
             "missing_required": missing_required,
             "missing_recommended": missing_recommended,
             "conflicts": [],

@@ -108,13 +108,14 @@ class FakeAudit:
         self.events.append(kwargs)
 
 
-def status(*, missing_required=(), missing_recommended=(), completion=100):
+def status(*, missing_required=(), missing_recommended=(), missing_identity=(), completion=100):
     return {
         "partnumber": "PN1",
         "category_code": "PORTABLE_SPEAKER",
         "known_fields": {},
         "missing_required": list(missing_required),
         "missing_recommended": list(missing_recommended),
+        "missing_identity": list(missing_identity),
         "conflicts": [],
         "completion_pct": completion,
     }
@@ -194,6 +195,52 @@ def test_partial_product_searches_only_missing_fields():
     assert set(result["promoted_fields"]) == {"ip_rating"}
     assert all(call[1] == [call[0]["source_type"] and call[1][0] if False else call[1][0]] for call in [])  # no-op guard
     assert {tuple(call[1]) for call in extractor.calls} <= {("ip_rating",), ("speaker_power_w",)}
+
+
+def test_identity_gap_is_researched_with_technical_gaps_and_stops_after_any_barcode_is_known():
+    from stech_mcp.services.research.research_planner import ResearchQuery
+
+    planner = FakePlanner([
+        ResearchQuery("PN1", "ean", "PORTABLE_SPEAKER", '"PN1" EAN GTIN barcode', ("jbl.com",), "MANUFACTURER"),
+    ])
+    search = FakeSearch([SearchResult("Official", "https://jbl.com/pn1", "EAN 0197528523880")])
+    extractor = FakeExtractor([
+        {
+            "field_code": "ean",
+            "raw_value": "0197528523880",
+            "normalized_value": "0197528523880",
+            "unit": None,
+            "source_type": "MANUFACTURER",
+            "source_name": "Official",
+            "source_url": "https://jbl.com/pn1",
+            "source_partnumber": "PN1",
+            "evidence_text": "PN1 EAN 0197528523880",
+            "page_number": 1,
+            "confidence_rank": "A1",
+            "status": "PENDING",
+        }
+    ])
+    promotion = FakePromotion([
+        {"state": "COMPLETED", "promoted": {"ean": "0197528523880"}, "preserved": {}, "rejected": [], "conflicts": []},
+    ])
+    engine = build_engine(
+        snapshots=[
+            status(missing_identity=("ean", "upc", "gtin"), completion=100),
+            status(missing_identity=("ean", "upc", "gtin"), completion=100),
+            status(missing_identity=(), completion=100),
+        ],
+        planner=planner,
+        search=search,
+        extractor=extractor,
+        promotion=promotion,
+    )
+
+    result = engine.enrich("PN1", "PORTABLE_SPEAKER", None, lambda *_: None)
+
+    assert set(planner.last_pending_fields) == {"ean", "upc", "gtin"}
+    assert result["state"] == "COMPLETED"
+    assert result["remaining_fields"] == []
+    assert result["promoted_fields"] == ["ean"]
 
 
 def test_unconfigured_search_returns_partial_instead_of_fake_success():

@@ -29,6 +29,9 @@ _DEFAULT_MANUFACTURER_DOMAINS: dict[str, tuple[str, ...]] = {
 }
 
 _FIELD_TERMS = {
+    "ean": "EAN GTIN barcode",
+    "upc": "UPC GTIN barcode",
+    "gtin": "GTIN EAN UPC barcode",
     "cpu_model": "processor CPU",
     "ram_gb": "RAM memory",
     "storage_gb": "storage SSD capacity",

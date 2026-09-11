@@ -78,3 +78,51 @@ def test_extractor_only_attempts_requested_fields():
     )
 
     assert [item["field_code"] for item in items] == ["ip_rating"]
+
+
+def test_extractor_accepts_only_labeled_gs1_valid_barcode_for_exact_partnumber():
+    extractor = FactExtractor()
+    items = extractor.extract(
+        {
+            "url": "https://support.lenovo.com/pn1",
+            "source_type": "MANUFACTURER",
+            "confidence_rank": "A1",
+            "pages": [{"page": 1, "text": "PN1 Product identifiers: EAN 0197528523880. Serial 1234567890123."}],
+        },
+        ["ean"],
+        "PN1",
+    )
+
+    assert len(items) == 1
+    assert items[0]["field_code"] == "ean"
+    assert items[0]["normalized_value"] == "0197528523880"
+    assert items[0]["source_partnumber"] == "PN1"
+    assert "EAN" in items[0]["evidence_text"].upper()
+
+
+def test_extractor_rejects_invalid_or_ambiguous_barcode_candidates():
+    extractor = FactExtractor()
+
+    invalid = extractor.extract(
+        {
+            "url": "https://brand.example/pn1",
+            "source_type": "MANUFACTURER",
+            "confidence_rank": "A1",
+            "pages": [{"page": 1, "text": "PN1 EAN 0197528523881"}],
+        },
+        ["ean"],
+        "PN1",
+    )
+    assert invalid == []
+
+    ambiguous = extractor.extract(
+        {
+            "url": "https://brand.example/pn1",
+            "source_type": "MANUFACTURER",
+            "confidence_rank": "A1",
+            "pages": [{"page": 1, "text": "PN1 EAN 0197528523880; EAN 0197528523897"}],
+        },
+        ["ean"],
+        "PN1",
+    )
+    assert ambiguous == []

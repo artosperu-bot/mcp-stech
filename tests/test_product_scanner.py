@@ -53,7 +53,7 @@ def build(rows, technical, images):
 def test_complete_product_creates_no_job():
     scanner, work = build(
         [{"partnumber": "PN1", "category_code": "LAPTOP", "stock_total": 5}],
-        {"PN1": {"missing_required": [], "missing_recommended": []}},
+        {"PN1": {"missing_required": [], "missing_recommended": [], "missing_identity": []}},
         {"PN1": {"state": "READY", "recommended_min": 4}},
     )
     result = scanner.scan_once(limit=10)
@@ -65,7 +65,7 @@ def test_complete_product_creates_no_job():
 def test_technical_gap_creates_master_enrichment_job():
     scanner, work = build(
         [{"partnumber": "PN1", "category_code": "LAPTOP", "stock_total": 5}],
-        {"PN1": {"missing_required": ["ram_gb"], "missing_recommended": []}},
+        {"PN1": {"missing_required": ["ram_gb"], "missing_recommended": [], "missing_identity": []}},
         {"PN1": {"state": "READY", "recommended_min": 4}},
     )
     result = scanner.scan_once(limit=10)
@@ -76,10 +76,26 @@ def test_technical_gap_creates_master_enrichment_job():
     assert result["technical_jobs_created"] == 1
 
 
+def test_identity_gap_alone_creates_master_enrichment_job():
+    scanner, work = build(
+        [{"partnumber": "PN1", "category_code": "LAPTOP", "stock_total": 5}],
+        {"PN1": {"missing_required": [], "missing_recommended": [], "missing_identity": ["ean", "upc", "gtin"]}},
+        {"PN1": {"state": "READY", "recommended_min": 4}},
+    )
+
+    result = scanner.scan_once(limit=10)
+
+    call = work.calls[0]
+    assert call["work_type"] == "ENRICH_TECHNICAL"
+    assert call["rows"][0]["scope"] == "MASTER"
+    assert call["rows"][0]["requested_fields"] == ["ean", "upc", "gtin"]
+    assert result["technical_jobs_created"] == 1
+
+
 def test_image_gap_creates_research_images_job():
     scanner, work = build(
         [{"partnumber": "PN1", "category_code": "LAPTOP", "stock_total": 5}],
-        {"PN1": {"missing_required": [], "missing_recommended": []}},
+        {"PN1": {"missing_required": [], "missing_recommended": [], "missing_identity": []}},
         {"PN1": {"state": "NO_IMAGES", "recommended_min": 4}},
     )
     result = scanner.scan_once(limit=10)
