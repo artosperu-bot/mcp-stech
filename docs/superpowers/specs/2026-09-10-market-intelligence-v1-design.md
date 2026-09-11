@@ -151,15 +151,19 @@ Política configurable y temporal.
 - `channel_code`
 - `category_code` nullable
 - `brand` nullable
-- `stech_margin_pct`
-- `minimum_margin_pct`
+- `stech_margin_pct`: objetivo comercial de margen
+- `minimum_margin_pct`: piso duro normal
 - `minimum_contribution_pen`
 - `undercut_amount_pen` default 1.00
 - `strategy`: `BALANCED`, `MARGIN`, `VOLUME`, `CLEARANCE`
+- `minimum_confidence_to_act` default 70
+- `maximum_risk_to_act` default 70
 - `effective_from`, `effective_to`
 - `is_active`
 
 Especificidad: canal+categoría+marca > canal+categoría > canal > default.
+
+`stech_margin_pct` orienta el precio objetivo; `minimum_margin_pct` define el precio piso normal. No son sinónimos.
 
 ### 4.6 `market_channel_fee_rule`
 
@@ -179,9 +183,28 @@ Permite representar las variaciones reales por categoría y fecha sin hardcodear
 
 Tipo de cambio usado por cálculo, con fuente y fecha. Si existe una fuente corporativa autorizada, el adapter la reutiliza en lugar de duplicarla.
 
-### 4.8 `market_recommendation_snapshot`
+### 4.8 `market_internal_metric_snapshot`
 
-Persistencia opcional de decisiones calculadas para auditoría/comparación.
+Snapshot temporal de la situación propia de S-TECH, alimentado desde ERP/vistas autorizadas o ingesta controlada.
+
+- `partnumber`
+- `observed_at`
+- `stock_qty`
+- `stock_available_qty` nullable
+- `current_sale_price_pen` nullable
+- `sales_units_7d`, `sales_units_30d`, `sales_units_90d` nullable
+- `revenue_30d_pen` nullable
+- `days_since_last_sale` nullable
+- `inventory_age_days` nullable
+- `source_code`
+- `source_key`
+- `data_quality_score`
+
+Esta tabla/adapter habilita rotación, presión de inventario y decisiones de liquidación sin inferirlas desde precios de competidores.
+
+### 4.9 `market_recommendation_snapshot`
+
+Persistencia de decisiones calculadas para auditoría y comparación temporal.
 
 - `partnumber`
 - `channel_code`
@@ -214,12 +237,15 @@ Para precio, costo, stock y mercado se calcularán, cuando haya datos:
 - días consecutivos sin stock;
 - variación del número de vendedores;
 - cambio de posición relativa de precio;
+- cambio de proveedor más barato;
 - diferencia S-TECH vs mínimo, mediana y siguiente competidor;
 - variación del costo de proveedor;
 - variación del margen posible;
-- spread `precio mercado - costo total`;
+- spread `precio mercado - costo total` y compresión/expansión del spread;
 - detección de subcotización agresiva;
 - indicios de guerra de precios: múltiples recortes cercanos dentro de una ventana;
+- rotación 7/30/90 y días sin venta cuando exista ERP;
+- envejecimiento de inventario;
 - frescura de cada señal.
 
 Cada resultado incluye `as_of`, número de observaciones y calidad/frescura.
@@ -271,6 +297,7 @@ Reglas base:
 4. Si S-TECH está materialmente por debajo del mercado y puede subir sin perder el objetivo de posición, recomendar `SUBIR_PRECIO`.
 5. Si no existe listing propio y el score/confianza cumplen umbral, recomendar `PUBLICAR`.
 6. El resultado siempre incluye `floor`, `target`, competidores relevantes, margen esperado, score, confianza y razones.
+7. Si `confidence_score < minimum_confidence_to_act` o `risk_score > maximum_risk_to_act`, una acción fuerte (`COMPRAR`, `SUBIR_STOCK`, `BAJAR_PRECIO`, `PUBLICAR`) se degrada a `INVESTIGAR` y conserva la acción candidata como dato explicativo.
 
 Estrategias iniciales:
 
@@ -327,10 +354,12 @@ Eventos normalizados:
 - `PROMO_STARTED`, `PROMO_ENDED`
 - `STOCK_OUT`, `RESTOCKED`
 - `SUPPLIER_COST_DROP`, `SUPPLIER_COST_INCREASE`
+- `CHEAPEST_SUPPLIER_CHANGED`
 - `COMPETITOR_ENTERED`, `COMPETITOR_LEFT`
 - `PRICE_WAR_SIGNAL`
 - `MARGIN_BELOW_FLOOR`
 - `MARKET_GAP_FOUND`
+- `NO_SALE_AGING_SIGNAL`
 
 ## 10. Acciones comerciales
 
@@ -354,6 +383,7 @@ Toda recomendación trae `reason_codes` y valores que la justifican; no solo tex
 ### Datos/configuración
 
 - `market_observation_ingest(...)`
+- `market_internal_metric_ingest(...)`
 - `market_product_match_upsert(...)`
 - `market_pricing_policy_get(...)`
 - `market_pricing_policy_upsert(...)`
@@ -364,7 +394,7 @@ Toda recomendación trae `reason_codes` y valores que la justifican; no solo tex
 
 - `market_competitors_get(partnumber, channel=None)`
 - `market_price_history(partnumber, channel=None, days=30)`
-- `market_variations_get(partnumber, channel=None, windows=[1,7,30,90])`
+- `market_variations_get(partnumber, channel=None, windows=(1,7,30,90))`
 - `market_data_quality(partnumber, channel=None)`
 
 ### Decisión
@@ -382,6 +412,8 @@ Toda recomendación trae `reason_codes` y valores que la justifican; no solo tex
 
 Los tools de escritura solo escriben observaciones/mapeos/políticas de inteligencia comercial. Ninguno toca precios o stock operativo.
 
+`market_strategy` con `budget_pen` solo asigna unidades cuando existen métricas suficientes de rotación/demanda y costo actual. Si faltan, devuelve un ranking y `recommended_units=null` en lugar de inventar cantidades.
+
 ## 12. Ingesta y fuentes
 
 Market Intelligence no debe depender de un scraper monolítico.
@@ -389,6 +421,7 @@ Market Intelligence no debe depender de un scraper monolítico.
 V1 acepta observaciones normalizadas desde:
 
 - históricos existentes de Deltron/DB_DISTRIBUIDORES;
+- ERP S-TECH mediante vista/adapter autorizado para stock y ventas;
 - futuros adapters Ingram/Intcomex;
 - APIs oficiales de marketplaces cuando existan y estén autorizadas;
 - collectors externos controlados;
@@ -408,7 +441,8 @@ Cada adapter transforma su fuente al mismo contrato de observación. Esto permit
 - valores negativos/imposibles se rechazan en la capa de dominio;
 - porcentajes se validan en rango;
 - moneda explícita en toda observación;
-- auditoría de cambios de políticas.
+- auditoría de cambios de políticas;
+- ninguna recomendación fuerte supera el gate de confianza/riesgo configurado.
 
 ## 14. Pruebas requeridas
 
@@ -420,7 +454,8 @@ Cada adapter transforma su fuente al mismo contrato de observación. Esto permit
 - volatilidad;
 - score/confidence/risk;
 - detección de guerra de precios;
-- estrategia de precio recomendado.
+- estrategia de precio recomendado;
+- gate de confianza/riesgo.
 
 ### Repository
 
@@ -428,6 +463,7 @@ Cada adapter transforma su fuente al mismo contrato de observación. Esto permit
 - histórico inmutable;
 - resolución de política por especificidad/fecha;
 - mappings exactos;
+- snapshots internos temporales;
 - consultas paginadas y parametrizadas.
 
 ### Service
@@ -437,7 +473,9 @@ Cada adapter transforma su fuente al mismo contrato de observación. Esto permit
 - competidor debajo del floor;
 - oportunidad alta pero confianza baja;
 - proveedor sin stock;
-- listing propio demasiado barato/caro.
+- listing propio demasiado barato/caro;
+- stock propio inmovilizado;
+- estrategia con presupuesto y demanda ausente/presente.
 
 ### MCP
 
@@ -465,6 +503,8 @@ Con un PN que tenga costo de proveedor, política de canal y al menos dos observ
 - Risk Score;
 - acción recomendada y razones estructuradas.
 
+Con métricas ERP disponibles debe incorporar stock propio, ventas 7/30/90, días sin venta y antigüedad de inventario.
+
 Con múltiples PNs debe ordenar oportunidades de mayor a menor score, pero permitir desempatar por confianza, utilidad o riesgo.
 
 ## 16. Fuera de alcance de V1
@@ -484,7 +524,7 @@ Después de V1 pueden añadirse, sin cambiar el contrato principal:
 - alertas automáticas por eventos;
 - forecasting de demanda;
 - elasticidad de precio;
-- recomendación de unidades a comprar;
+- recomendación de unidades a comprar más sofisticada;
 - optimización de presupuesto por cartera;
 - integración aprobada de escritura hacia marketplaces;
 - aprendizaje de pesos basado en resultados reales, manteniendo explicabilidad y control.
