@@ -7,6 +7,78 @@ from stech_mcp.db.product_work_control_repository import ProductWorkControlRepos
 
 
 class ProductWorkExecutionRepository(ProductWorkControlRepository):
+    def claim_next(
+        self,
+        worker_id: str,
+        lease_seconds: int = 120,
+        allowed_work_types: tuple[str, ...] | list[str] | None = None,
+    ) -> dict[str, Any] | None:
+        allowed = tuple(
+            dict.fromkeys(
+                str(value or "").strip().upper()
+                for value in (allowed_work_types or ())
+                if str(value or "").strip()
+            )
+        )
+        if not allowed:
+            return super().claim_next(worker_id, lease_seconds)
+
+        placeholders = ",".join("?" for _ in allowed)
+        conn = self.connection_factory()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                f"""
+;WITH next_item AS (
+    SELECT TOP (1) i.product_work_item_id
+    FROM dbo.product_work_item i WITH (UPDLOCK, READPAST, ROWLOCK)
+    WHERE i.status IN (N'QUEUED', N'FAILED_RETRYABLE')
+      AND i.work_type IN ({placeholders})
+      AND (i.next_attempt_at IS NULL OR i.next_attempt_at <= SYSUTCDATETIME())
+      AND (i.claim_expires_at IS NULL OR i.claim_expires_at <= SYSUTCDATETIME())
+      AND i.attempt_count < i.max_attempts
+    ORDER BY i.priority DESC, i.product_work_item_id
+)
+UPDATE i
+SET claimed_by = ?,
+    claimed_at = SYSUTCDATETIME(),
+    claim_expires_at = DATEADD(SECOND, ?, SYSUTCDATETIME()),
+    attempt_count = attempt_count + 1,
+    updated_at = SYSUTCDATETIME()
+OUTPUT
+    INSERTED.product_work_item_id,
+    INSERTED.product_work_job_id,
+    INSERTED.work_type,
+    INSERTED.partnumber,
+    INSERTED.category_code,
+    INSERTED.channel_code,
+    INSERTED.context_hash,
+    INSERTED.input_json,
+    INSERTED.status,
+    INSERTED.current_step,
+    INSERTED.progress_pct,
+    INSERTED.priority,
+    INSERTED.attempt_count,
+    INSERTED.max_attempts,
+    INSERTED.next_attempt_at,
+    INSERTED.claimed_by,
+    INSERTED.claim_expires_at
+FROM dbo.product_work_item i
+JOIN next_item n ON n.product_work_item_id = i.product_work_item_id;
+""",
+                *allowed,
+                worker_id,
+                int(lease_seconds),
+            )
+            row = self._decode_item(self._row_dict(cur, cur.fetchone()))
+            conn.commit()
+            return row
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
     def get_item(self, item_id: int) -> dict[str, Any] | None:
         conn = self.connection_factory()
         try:

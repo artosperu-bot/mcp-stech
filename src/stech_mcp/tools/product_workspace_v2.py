@@ -22,6 +22,19 @@ def register_product_workspace_v2_tools(
 ) -> dict[str, Any]:
     """Register safe V2 controls without exposing channel publication writes."""
 
+    def _partnumbers(values: list[str], *, max_items: int = 2000) -> list[str]:
+        rows: list[str] = []
+        seen: set[str] = set()
+        for raw in list(values or [])[:max_items]:
+            pn = str(raw or "").strip().upper()
+            if not pn or pn in seen:
+                continue
+            seen.add(pn)
+            rows.append(pn)
+        if not rows:
+            raise ValueError("at least one valid partnumber is required")
+        return rows
+
     def _research_rows(
         partnumbers: list[str],
         category_code: str | None,
@@ -30,20 +43,13 @@ def register_product_workspace_v2_tools(
         category = str(category_code or "").strip().upper()
         desired = None if target_count in (None, "") else max(1, min(int(target_count), 20))
         rows: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        for raw in list(partnumbers or [])[:2000]:
-            pn = str(raw or "").strip().upper()
-            if not pn or pn in seen:
-                continue
-            seen.add(pn)
+        for pn in _partnumbers(partnumbers):
             row: dict[str, Any] = {"partnumber": pn, "scope": "MASTER"}
             if category:
                 row["category_code"] = category
             if desired is not None:
                 row["image_target_count"] = desired
             rows.append(row)
-        if not rows:
-            raise ValueError("at least one valid partnumber is required")
         return rows
 
     def _health_extra() -> dict[str, Any]:
@@ -175,6 +181,23 @@ def register_product_workspace_v2_tools(
         return channel_gap_analyzer.get(partnumber, channel_code, category_code, requirements_version)
 
     @mcp.tool()
+    def product_channel_gap_batch(
+        partnumbers: list[str],
+        channel_code: str,
+        category_code: str,
+        requirements_version: str | None = None,
+    ) -> dict[str, Any]:
+        if channel_gap_analyzer is None:
+            return {"count": 0, "by_state": {"NOT_CONFIGURED": 0}, "results": []}
+        pns = _partnumbers(partnumbers)
+        results = [
+            channel_gap_analyzer.get(pn, channel_code, category_code, requirements_version)
+            for pn in pns
+        ]
+        counts = Counter(str(row.get("state") or "UNKNOWN").upper() for row in results)
+        return {"count": len(results), "by_state": dict(counts), "results": results}
+
+    @mcp.tool()
     def product_channel_draft_prepare(
         partnumber: str,
         channel_code: str,
@@ -184,6 +207,43 @@ def register_product_workspace_v2_tools(
         if channel_draft_service is None:
             return {"created": False, "state": "NOT_CONFIGURED"}
         return channel_draft_service.prepare(partnumber, channel_code, category_code, requirements_version)
+
+    @mcp.tool()
+    def product_channel_draft_prepare_batch(
+        partnumbers: list[str],
+        channel_code: str,
+        category_code: str,
+        requirements_version: str | None = None,
+    ) -> dict[str, Any]:
+        if channel_draft_service is None:
+            return {"count": 0, "created_count": 0, "blocked_count": 0, "results": []}
+        pns = _partnumbers(partnumbers)
+        results = [
+            channel_draft_service.prepare(pn, channel_code, category_code, requirements_version)
+            for pn in pns
+        ]
+        created = sum(1 for row in results if bool(row.get("created")))
+        return {
+            "count": len(results),
+            "created_count": created,
+            "blocked_count": len(results) - created,
+            "results": results,
+        }
+
+    @mcp.tool()
+    def product_channel_draft_history(
+        partnumber: str,
+        channel_code: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        pn = str(partnumber or "").strip().upper()
+        channel = str(channel_code or "").strip().upper() or None
+        if not pn:
+            raise ValueError("partnumber is required")
+        if channel_draft_service is None:
+            return {"partnumber": pn, "channel_code": channel, "count": 0, "drafts": []}
+        rows = channel_draft_service.history(pn, channel, limit=limit)
+        return {"partnumber": pn, "channel_code": channel, "count": len(rows), "drafts": rows}
 
     @mcp.tool()
     def product_workspace_v2_get(partnumber: str) -> dict[str, Any]:
@@ -208,7 +268,10 @@ def register_product_workspace_v2_tools(
         "product_image_candidate_import": product_image_candidate_import,
         "product_image_candidate_reject": product_image_candidate_reject,
         "product_channel_gap_get": product_channel_gap_get,
+        "product_channel_gap_batch": product_channel_gap_batch,
         "product_channel_draft_prepare": product_channel_draft_prepare,
+        "product_channel_draft_prepare_batch": product_channel_draft_prepare_batch,
+        "product_channel_draft_history": product_channel_draft_history,
         "product_workspace_v2_get": product_workspace_v2_get,
     }
     if namespace is not None:
