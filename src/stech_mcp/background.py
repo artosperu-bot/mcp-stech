@@ -29,6 +29,7 @@ class BackgroundRuntime:
         self._last_scan_at: datetime | None = None
         self._last_scan_result: dict[str, Any] | None = None
         self._next_scan_at: datetime | None = None
+        self._after_partnumber = ""
 
     def pause(self) -> dict[str, Any]:
         self._paused = True
@@ -43,7 +44,16 @@ class BackgroundRuntime:
             return {"skipped": "PAUSED"}
         result = self.scanner.scan_once(
             limit=self.max_jobs_per_scan,
-            after_partnumber="",
+            after_partnumber=self._after_partnumber,
+        )
+        scanned = max(int(result.get("scanned") or 0), 0)
+        last_partnumber = str(result.get("last_partnumber") or "").strip().upper()
+        # Continue from the last PN only while the page was full. A short/empty
+        # page means the end of the catalog and the next scan starts from zero.
+        self._after_partnumber = (
+            last_partnumber
+            if scanned >= self.max_jobs_per_scan and last_partnumber
+            else ""
         )
         now = datetime.now(timezone.utc)
         self._last_scan_at = now
@@ -58,6 +68,7 @@ class BackgroundRuntime:
             "scan_interval_seconds": self.scan_interval_seconds,
             "max_jobs_per_scan": self.max_jobs_per_scan,
             "max_workers": self.max_workers,
+            "after_partnumber": self._after_partnumber or None,
             "last_scan_at": self._last_scan_at.isoformat() if self._last_scan_at else None,
             "next_scan_at": self._next_scan_at.isoformat() if self._next_scan_at else None,
             "last_scan_result": self._last_scan_result,
