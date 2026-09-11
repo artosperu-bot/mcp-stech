@@ -151,11 +151,11 @@ class ProductTechnicalStatusService:
                 known_fields[field_code] = value
                 field_sources[field_code] = "DELTRON"
 
-        # Approved enrichment only fills gaps. It never replaces a field that
-        # already exists in structured Deltron data for the exact PN.
+        # Approved enrichment may refine generic product data or fill gaps, but
+        # it never replaces a structured Deltron field for the exact PN.
         for row in self.enrichment_repository.get_approved(normalized_pn):
             field_code = normalize_field_code(row.get("field_code"))
-            if field_code not in schema_fields or field_code in known_fields:
+            if field_code not in schema_fields or field_sources.get(field_code) == "DELTRON":
                 continue
             value = _approved_value(row)
             if _has_value(value):
