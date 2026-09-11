@@ -768,6 +768,31 @@ ORDER BY m.partnumber;
         finally:
             self._close(connection)
 
+    def list_supplier_partnumbers(
+        self,
+        *,
+        supplier: str | None = None,
+        limit: int = 100,
+    ) -> list[str]:
+        """Discover products present in supplier history even without competitor matches."""
+        safe_limit = max(1, min(int(limit), 500))
+        supplier_code = _text(supplier, upper=True) or None
+        connection = self._connection_factory()
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                f"""
+SELECT DISTINCT TOP ({safe_limit}) partnumber
+FROM dbo.supplier_observation
+WHERE (? IS NULL OR supplier_code = ?)
+ORDER BY partnumber;
+""",
+                supplier_code, supplier_code,
+            )
+            return [str(row[0]) for row in cursor.fetchall()]
+        finally:
+            self._close(connection)
+
     def save_recommendation_snapshot(self, snapshot: dict[str, Any]) -> None:
         action = _text(snapshot.get("action_code"), upper=True)
         if action not in _ACTIONS:
