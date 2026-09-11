@@ -4,25 +4,30 @@ from __future__ import annotations
 
 The legacy server remains the single registry for existing tools and shared
 repositories. V2 capabilities are registered additively here so Product Work,
-technical schemas, research/audit tools and authoritative VTEX image positions
-can evolve without replacing legacy Product Loader or marketplace behavior.
+technical schemas, research/audit tools, Market Intelligence and authoritative
+VTEX image positions can evolve without replacing legacy Product Loader or
+marketplace behavior.
 """
 
 import os
 
 from stech_mcp import server as _server
 from stech_mcp.db.fact_candidate_repository import FactCandidateRepository
+from stech_mcp.db.market_repository import MarketRepository
 from stech_mcp.db.product_schema_repository import ProductSchemaRepository
 from stech_mcp.db.product_work_control_repository import ProductWorkControlRepository
 from stech_mcp.db.source_document_repository import SourceDocumentRepository
 from stech_mcp.services.fact_extractor import FactExtractor
 from stech_mcp.services.fact_promotion import FactPromotionService
+from stech_mcp.services.market_intelligence import MarketIntelligenceService
+from stech_mcp.services.market_opportunities import MarketOpportunityService
 from stech_mcp.services.multichannel_readiness import MultichannelReadinessService
 from stech_mcp.services.product_technical_status import ProductTechnicalStatusService
 from stech_mcp.services.product_work_service import ProductWorkService
 from stech_mcp.services.research.research_planner import ResearchPlanner
 from stech_mcp.services.source_document_service import SourceDocumentService
 from stech_mcp.services.vtex_image_sync_authoritative import VtexImageSyncService
+from stech_mcp.tools.market_intelligence import register_market_intelligence_tools
 from stech_mcp.tools.product_research import register_product_research_tools
 from stech_mcp.tools.product_schema import register_product_schema_tools
 from stech_mcp.tools.product_work import register_product_work_tools
@@ -97,6 +102,28 @@ product_research_tools = register_product_research_tools(
     candidate_repository=fact_candidate_repository,
     promotion_service=fact_promotion_service,
     multichannel_readiness_service=multichannel_readiness_service,
+    namespace=_server,
+)
+
+# Market Intelligence V1 is additive. It persists market observations and
+# commercial policies in STECH_MCP, reads the existing product catalog, and
+# exposes analysis/recommendations only. It does not write operational price,
+# stock, activation, purchases or marketplace listings.
+market_repository = MarketRepository(_server.mcp_connection_factory)
+market_intelligence_service = MarketIntelligenceService(
+    market_repository=market_repository,
+    product_repository=_server.product_repository,
+)
+market_opportunity_service = MarketOpportunityService(
+    market_service=market_intelligence_service,
+    market_repository=market_repository,
+    product_repository=_server.product_repository,
+)
+market_intelligence_tools = register_market_intelligence_tools(
+    _server.mcp,
+    market_repository=market_repository,
+    market_service=market_intelligence_service,
+    opportunity_service=market_opportunity_service,
     namespace=_server,
 )
 
