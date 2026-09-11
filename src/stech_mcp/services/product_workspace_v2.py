@@ -23,6 +23,14 @@ class ProductWorkspaceV2Service:
         self.fact_candidate_repository = fact_candidate_repository
         self.work_repository = work_repository
 
+    @staticmethod
+    def _fallback_category(product: dict[str, Any]) -> str | None:
+        for key in ("category_code", "categoria", "subcategoria", "familia", "tipo_producto"):
+            value = str(product.get(key) or "").strip().upper()
+            if value:
+                return value
+        return None
+
     def get(self, partnumber: str) -> dict[str, Any]:
         pn = str(partnumber or "").strip().upper()
         if not pn:
@@ -31,8 +39,24 @@ class ProductWorkspaceV2Service:
         if product is None:
             return {"found": False, "partnumber": pn}
 
-        technical = self.technical_status_service.get(pn)
-        category = str(technical.get("category_code") or "").strip().upper() or None
+        try:
+            technical = self.technical_status_service.get(pn)
+        except LookupError as exc:
+            category = self._fallback_category(product)
+            technical = {
+                "partnumber": pn,
+                "category_code": category,
+                "state": "NOT_CONFIGURED",
+                "known_fields": {},
+                "missing_required": [],
+                "missing_recommended": [],
+                "conflicts": [],
+                "completion_pct": 0,
+                "reason": str(exc),
+            }
+        else:
+            category = str(technical.get("category_code") or "").strip().upper() or None
+
         image_readiness = self.image_readiness_service.get(
             pn,
             category_code=category,
