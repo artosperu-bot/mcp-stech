@@ -109,8 +109,30 @@ def calculate_floor_price(
 
     margin_floor = fixed_cost / margin_denominator
     contribution_floor = (fixed_cost + minimum_contribution_pen) / contribution_denominator
-    raw = max(margin_floor, contribution_floor)
-    return raw.quantize(_MONEY, rounding=ROUND_CEILING)
+    candidate = max(margin_floor, contribution_floor).quantize(_MONEY, rounding=ROUND_CEILING)
+
+    # The algebraic boundary is exact, but calculate_profit intentionally rounds
+    # channel fees and contribution to the same 4-decimal money precision used by
+    # the service. Validate the candidate with those realized semantics so the
+    # returned floor can never land microscopically below either configured rule.
+    for _ in range(100):
+        realized = calculate_profit(
+            sale_price_pen=candidate,
+            product_cost_pen=product_cost_pen,
+            commission_pct=commission_pct,
+            payment_fee_pct=payment_fee_pct,
+            fixed_fee_pen=fixed_fee_pen,
+            shipping_cost_pen=shipping_cost_pen,
+            other_cost_pen=other_cost_pen,
+        )
+        if (
+            realized["margin_pct"] >= minimum_margin_pct
+            and realized["contribution_pen"] >= minimum_contribution_pen
+        ):
+            return candidate
+        candidate += _MONEY
+
+    raise ArithmeticError("unable to find a rounded floor price satisfying configured constraints")
 
 
 def _normalize_time(value: Any) -> datetime:
