@@ -129,7 +129,7 @@ def normalize_mm(value: Any) -> dict[str, Any] | None:
 
 def normalize_inches(value: Any) -> dict[str, Any] | None:
     text = str(value or "").strip()
-    match = re.search(rf"{_NUMBER}\s*(?:in|inch|inches|pulg(?:adas?)?|\")\b?", text, re.I)
+    match = re.search(rf'{_NUMBER}\s*(?:inches?|in|pulg(?:adas?)?|")', text, re.I)
     if not match:
         return None
     return {"value": _compact(_number(match.group(1))), "unit": "in"}
