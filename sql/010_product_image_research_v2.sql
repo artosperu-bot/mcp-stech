@@ -30,10 +30,24 @@ BEGIN
 END;
 GO
 
-IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE object_id=OBJECT_ID(N'dbo.product_image_candidate') AND name=N'UX_product_image_candidate_url')
+-- source_url can be NVARCHAR(2048), which exceeds SQL Server's 1700-byte
+-- nonclustered index key limit. Index a deterministic SHA-256 instead while
+-- retaining the complete URL as evidence.
+IF COL_LENGTH(N'dbo.product_image_candidate', N'source_url_hash') IS NULL
 BEGIN
-    CREATE UNIQUE INDEX UX_product_image_candidate_url ON dbo.product_image_candidate(partnumber, source_url);
+    ALTER TABLE dbo.product_image_candidate
+        ADD source_url_hash AS CONVERT(BINARY(32), HASHBYTES('SHA2_256', CONVERT(VARBINARY(MAX), source_url))) PERSISTED;
 END;
+GO
+
+IF EXISTS (SELECT 1 FROM sys.indexes WHERE object_id=OBJECT_ID(N'dbo.product_image_candidate') AND name=N'UX_product_image_candidate_url')
+BEGIN
+    DROP INDEX UX_product_image_candidate_url ON dbo.product_image_candidate;
+END;
+GO
+
+CREATE UNIQUE INDEX UX_product_image_candidate_url
+    ON dbo.product_image_candidate(partnumber, source_url_hash);
 GO
 
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE object_id=OBJECT_ID(N'dbo.product_image_candidate') AND name=N'IX_product_image_candidate_product_state')
