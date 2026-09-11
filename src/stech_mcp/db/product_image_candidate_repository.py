@@ -13,12 +13,7 @@ def _row_to_dict(cursor: Any, row: Any) -> dict[str, Any] | None:
 
 
 class ProductImageCandidateRepository:
-    """Persistence for unapproved image research candidates.
-
-    Candidate discovery is intentionally separate from ``product_image``. A web
-    result only becomes a Product Workspace image after explicit verification or
-    a later policy-controlled import step.
-    """
+    """Persistence for image research candidates and image requirement policy."""
 
     def __init__(self, connection_factory: Callable[[], Any]):
         self.connection_factory = connection_factory
@@ -51,6 +46,31 @@ class ProductImageCandidateRepository:
         connection = self.connection_factory()
         try:
             cursor = connection.cursor()
+            cursor.execute(
+                """
+                SELECT TOP (1) product_image_candidate_id
+                FROM dbo.product_image_candidate WITH (UPDLOCK, HOLDLOCK)
+                WHERE partnumber = ? AND source_url = ?
+                """,
+                pn,
+                url,
+            )
+            existing = cursor.fetchone()
+            if existing is not None:
+                candidate_id = int(existing[0])
+                cursor.execute(
+                    """
+                    SELECT product_image_candidate_id, partnumber, state, source_url
+                    FROM dbo.product_image_candidate
+                    WHERE product_image_candidate_id = ?
+                    """,
+                    candidate_id,
+                )
+                row = _row_to_dict(cursor, cursor.fetchone())
+                if row is None:
+                    raise RuntimeError("existing candidate could not be read back")
+                return row
+
             cursor.execute(
                 """
                 INSERT dbo.product_image_candidate (
@@ -160,6 +180,49 @@ class ProductImageCandidateRepository:
             if hasattr(connection, "rollback"):
                 connection.rollback()
             raise
+        finally:
+            if hasattr(connection, "close"):
+                connection.close()
+
+    def get_image_requirement_policy(self, channel_code: str, category_code: str) -> dict[str, Any] | None:
+        channel = str(channel_code or "MASTER").strip().upper() or "MASTER"
+        category = str(category_code or "DEFAULT").strip().upper() or "DEFAULT"
+        connection = self.connection_factory()
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                """
+                SELECT TOP (1)
+                    image_requirement_policy_id, channel_code, category_code, version_code,
+                    required_min, recommended_min, require_main, min_width_px,
+                    min_height_px, exactness_policy, active, created_at, updated_at
+                FROM dbo.image_requirement_policy
+                WHERE active = 1
+                  AND (
+                    (channel_code = ? AND category_code = ?) OR
+                    (channel_code = ? AND category_code = N'DEFAULT') OR
+                    (channel_code = N'MASTER' AND category_code = ?) OR
+                    (channel_code = N'MASTER' AND category_code = N'DEFAULT')
+                  )
+                ORDER BY
+                    CASE
+                        WHEN channel_code = ? AND category_code = ? THEN 1
+                        WHEN channel_code = ? AND category_code = N'DEFAULT' THEN 2
+                        WHEN channel_code = N'MASTER' AND category_code = ? THEN 3
+                        ELSE 4
+                    END,
+                    image_requirement_policy_id DESC
+                """,
+                channel,
+                category,
+                channel,
+                category,
+                channel,
+                category,
+                channel,
+                category,
+            )
+            return _row_to_dict(cursor, cursor.fetchone())
         finally:
             if hasattr(connection, "close"):
                 connection.close()
