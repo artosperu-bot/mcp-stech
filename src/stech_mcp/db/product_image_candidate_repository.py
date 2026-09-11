@@ -102,15 +102,7 @@ class ProductImageCandidateRepository:
                 raise RuntimeError("candidate insert did not return id")
             candidate_id = int(inserted[0])
             connection.commit()
-            cursor.execute(
-                """
-                SELECT product_image_candidate_id, partnumber, state, source_url
-                FROM dbo.product_image_candidate
-                WHERE product_image_candidate_id = ?
-                """,
-                candidate_id,
-            )
-            row = _row_to_dict(cursor, cursor.fetchone())
+            row = self.get_candidate(candidate_id, connection=connection)
             if row is None:
                 raise RuntimeError("candidate could not be read back")
             return row
@@ -121,6 +113,29 @@ class ProductImageCandidateRepository:
         finally:
             if hasattr(connection, "close"):
                 connection.close()
+
+    def get_candidate(self, candidate_id: int, *, connection: Any | None = None) -> dict[str, Any] | None:
+        owned = connection is None
+        conn = connection or self.connection_factory()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT
+                    product_image_candidate_id, partnumber, source_type, source_url,
+                    source_domain, source_page_url, title, thumbnail_url,
+                    image_width_px, image_height_px, exactness_policy,
+                    partnumber_match, variant_match, confidence_score, state,
+                    evidence_json, discovered_at, updated_at
+                FROM dbo.product_image_candidate
+                WHERE product_image_candidate_id = ?
+                """,
+                int(candidate_id),
+            )
+            return _row_to_dict(cursor, cursor.fetchone())
+        finally:
+            if owned and hasattr(conn, "close"):
+                conn.close()
 
     def list_for_product(self, partnumber: str) -> list[dict[str, Any]]:
         pn = str(partnumber or "").strip().upper()
@@ -164,15 +179,7 @@ class ProductImageCandidateRepository:
                 int(candidate_id),
             )
             connection.commit()
-            cursor.execute(
-                """
-                SELECT product_image_candidate_id, partnumber, state, source_url
-                FROM dbo.product_image_candidate
-                WHERE product_image_candidate_id = ?
-                """,
-                int(candidate_id),
-            )
-            row = _row_to_dict(cursor, cursor.fetchone())
+            row = self.get_candidate(int(candidate_id), connection=connection)
             if row is None:
                 raise ValueError("candidate not found")
             return row
