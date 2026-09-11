@@ -12,6 +12,9 @@ def register_product_workspace_v2_tools(
     image_readiness_service: Any,
     image_research_service: Any | None = None,
     candidate_repository: Any | None = None,
+    channel_gap_analyzer: Any | None = None,
+    channel_draft_service: Any | None = None,
+    workspace_service: Any | None = None,
     namespace: Any | None = None,
 ) -> dict[str, Any]:
     """Register safe V2 controls without exposing channel publication writes."""
@@ -41,11 +44,7 @@ def register_product_workspace_v2_tools(
         bounded = max(1, min(int(limit), 200))
         rows = list(work_service.list_jobs(limit=bounded))
         counts = Counter(str(row.get("status") or "UNKNOWN").upper() for row in rows)
-        return {
-            "count": len(rows),
-            "by_status": dict(counts),
-            "jobs": rows,
-        }
+        return {"count": len(rows), "by_status": dict(counts), "jobs": rows}
 
     @mcp.tool()
     def product_images_readiness(
@@ -92,6 +91,44 @@ def register_product_workspace_v2_tools(
         rows = list(candidate_repository.list_for_product(pn))
         return {"partnumber": pn, "count": len(rows), "candidates": rows}
 
+    @mcp.tool()
+    def product_channel_gap_get(
+        partnumber: str,
+        channel_code: str,
+        category_code: str,
+        requirements_version: str | None = None,
+    ) -> dict[str, Any]:
+        if channel_gap_analyzer is None:
+            return {"state": "NOT_CONFIGURED"}
+        return channel_gap_analyzer.get(
+            partnumber,
+            channel_code,
+            category_code,
+            requirements_version,
+        )
+
+    @mcp.tool()
+    def product_channel_draft_prepare(
+        partnumber: str,
+        channel_code: str,
+        category_code: str,
+        requirements_version: str | None = None,
+    ) -> dict[str, Any]:
+        if channel_draft_service is None:
+            return {"created": False, "state": "NOT_CONFIGURED"}
+        return channel_draft_service.prepare(
+            partnumber,
+            channel_code,
+            category_code,
+            requirements_version,
+        )
+
+    @mcp.tool()
+    def product_workspace_v2_get(partnumber: str) -> dict[str, Any]:
+        if workspace_service is None:
+            return {"found": False, "partnumber": str(partnumber or "").strip().upper()}
+        return workspace_service.get(partnumber)
+
     registered = {
         "background_status": background_status,
         "background_pause": background_pause,
@@ -102,6 +139,9 @@ def register_product_workspace_v2_tools(
         "product_images_readiness": product_images_readiness,
         "product_images_research": product_images_research,
         "product_image_candidates": product_image_candidates,
+        "product_channel_gap_get": product_channel_gap_get,
+        "product_channel_draft_prepare": product_channel_draft_prepare,
+        "product_workspace_v2_get": product_workspace_v2_get,
     }
     if namespace is not None:
         for name, func in registered.items():
