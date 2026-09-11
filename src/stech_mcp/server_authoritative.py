@@ -119,7 +119,7 @@ product_image_readiness_service = ProductImageReadinessService(
 product_image_search_provider = BraveImageSearchProvider(
     api_key=os.getenv("STECH_BRAVE_SEARCH_API_KEY", ""),
     country=os.getenv("STECH_SEARCH_COUNTRY", "PE"),
-    search_lang=os.getenv("STECH_SEARCH_LANG", "es"),
+    search_lang=os.getenv("STECH_SEARCH_LANGUAGE", os.getenv("STECH_SEARCH_LANG", "es")),
 )
 product_image_research_service = ProductImageResearchService(
     product_repository=_server.product_repository,
