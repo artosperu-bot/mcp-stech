@@ -140,7 +140,8 @@ class ProductTechnicalStatusService:
                 known_fields[field_code] = value
                 field_sources[field_code] = "PRODUCT"
 
-        # Deltron technical truth comes from PRD_DELTRON_ESPECIFICACION.
+        # Deltron technical truth comes from PRD_DELTRON_ESPECIFICACION and
+        # overrides generic/direct product fields for the exact distributor PN.
         for candidate in self._deltron_candidates(product, category_code):
             field_code = normalize_field_code(candidate.get("field_code"))
             if field_code not in schema_fields:
@@ -150,10 +151,11 @@ class ProductTechnicalStatusService:
                 known_fields[field_code] = value
                 field_sources[field_code] = "DELTRON"
 
-        # Approved enrichment has final precedence over Deltron/raw values.
+        # Approved enrichment only fills gaps. It never replaces a field that
+        # already exists in structured Deltron data for the exact PN.
         for row in self.enrichment_repository.get_approved(normalized_pn):
             field_code = normalize_field_code(row.get("field_code"))
-            if field_code not in schema_fields:
+            if field_code not in schema_fields or field_code in known_fields:
                 continue
             value = _approved_value(row)
             if _has_value(value):
