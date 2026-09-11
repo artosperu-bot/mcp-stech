@@ -65,6 +65,57 @@ def _normalize_fragment(text: str, pattern: str, normalizer: Callable[[Any], Any
     return (fragment, normalized) if normalized is not None else None
 
 
+def _gs1_valid(value: str) -> bool:
+    digits = re.sub(r"\D", "", str(value or ""))
+    if len(digits) not in {8, 12, 13, 14}:
+        return False
+    body = [int(char) for char in digits[:-1]]
+    expected = int(digits[-1])
+    weighted = 0
+    for index, digit in enumerate(reversed(body)):
+        weighted += digit * (3 if index % 2 == 0 else 1)
+    return (10 - (weighted % 10)) % 10 == expected
+
+
+def _barcode(text: str, field_code: str) -> tuple[str, Any] | None:
+    labels = {
+        "ean": r"EAN(?:[- ]?13)?",
+        "upc": r"UPC(?:[- ]?A)?",
+        "gtin": r"GTIN(?:[- ]?(?:8|12|13|14))?|BARCODE|C[ÓO]DIGO\s+DE\s+BARRAS",
+    }
+    label = labels[field_code]
+    pattern = rf"\b(?:{label})\b\s*[:#\-]?\s*((?:\d[\s-]?){7,13}\d)"
+    matches: list[tuple[str, str]] = []
+    for match in re.finditer(pattern, text, re.I):
+        raw = match.group(0).strip(" ,;:.()[]")
+        digits = re.sub(r"\D", "", match.group(1))
+        if not _gs1_valid(digits):
+            continue
+        if field_code == "ean" and len(digits) not in {8, 13}:
+            continue
+        if field_code == "upc" and len(digits) != 12:
+            continue
+        matches.append((raw, digits))
+    values = {digits for _, digits in matches}
+    if len(values) != 1:
+        return None
+    target = next(iter(values))
+    raw = next(raw for raw, digits in matches if digits == target)
+    return raw, target
+
+
+def _ean(text: str) -> tuple[str, Any] | None:
+    return _barcode(text, "ean")
+
+
+def _upc(text: str) -> tuple[str, Any] | None:
+    return _barcode(text, "upc")
+
+
+def _gtin(text: str) -> tuple[str, Any] | None:
+    return _barcode(text, "gtin")
+
+
 def _bluetooth(text: str) -> tuple[str, Any] | None:
     return _normalize_fragment(text, r"\bBluetooth\s*(?:version|versi[oó]n|v)?\s*[2-6](?:\.\d{1,2})?\b", normalize_bluetooth)
 
@@ -74,8 +125,6 @@ def _ip_rating(text: str) -> tuple[str, Any] | None:
 
 
 def _power(text: str) -> tuple[str, Any] | None:
-    # Power is intentionally strict: more than one W value is ambiguous
-    # (speaker output vs charger/adapter) and must be researched/reviewed.
     return _normalize_fragment(text, r"\b\d+(?:[.,]\d+)?\s*W\b", normalize_power_w)
 
 
@@ -88,19 +137,11 @@ def _capacity_wh(text: str) -> tuple[str, Any] | None:
 
 
 def _frequency(text: str) -> tuple[str, Any] | None:
-    return _normalize_fragment(
-        text,
-        r"\b\d+(?:[.,]\d+)?\s*k?\s*Hz\s*(?:-|–|—|a|to)\s*\d+(?:[.,]\d+)?\s*k?\s*Hz\b",
-        normalize_frequency_range,
-    )
+    return _normalize_fragment(text, r"\b\d+(?:[.,]\d+)?\s*k?\s*Hz\s*(?:-|–|—|a|to)\s*\d+(?:[.,]\d+)?\s*k?\s*Hz\b", normalize_frequency_range)
 
 
 def _dimensions(text: str) -> tuple[str, Any] | None:
-    return _normalize_fragment(
-        text.replace("×", "x"),
-        r"\b\d+(?:[.,]\d+)?\s*x\s*\d+(?:[.,]\d+)?\s*x\s*\d+(?:[.,]\d+)?\s*(?:mm|cm)\b",
-        normalize_dimensions,
-    )
+    return _normalize_fragment(text.replace("×", "x"), r"\b\d+(?:[.,]\d+)?\s*x\s*\d+(?:[.,]\d+)?\s*x\s*\d+(?:[.,]\d+)?\s*(?:mm|cm)\b", normalize_dimensions)
 
 
 def _weight_kg(text: str) -> tuple[str, Any] | None:
@@ -120,19 +161,11 @@ def _weight_g(text: str) -> tuple[str, Any] | None:
 
 
 def _ram(text: str) -> tuple[str, Any] | None:
-    return _normalize_fragment(
-        text,
-        r"\b(?:RAM|memoria(?:\s+RAM)?|memory)\s*[:\-]?\s*\d+(?:[.,]\d+)?\s*(?:GB|TB)\b(?:\s*(?:LP)?DDR\d\w*)?",
-        normalize_ram_gb,
-    )
+    return _normalize_fragment(text, r"\b(?:RAM|memoria(?:\s+RAM)?|memory)\s*[:\-]?\s*\d+(?:[.,]\d+)?\s*(?:GB|TB)\b(?:\s*(?:LP)?DDR\d\w*)?", normalize_ram_gb)
 
 
 def _storage(text: str) -> tuple[str, Any] | None:
-    return _normalize_fragment(
-        text,
-        r"\b(?:SSD|storage|almacenamiento|disco)\s*[:\-]?\s*\d+(?:[.,]\d+)?\s*(?:GB|TB)\b|\b\d+(?:[.,]\d+)?\s*(?:GB|TB)\s*(?:SSD|NVMe|UFS|eMMC|HDD)\b",
-        normalize_storage_gb,
-    )
+    return _normalize_fragment(text, r"\b(?:SSD|storage|almacenamiento|disco)\s*[:\-]?\s*\d+(?:[.,]\d+)?\s*(?:GB|TB)\b|\b\d+(?:[.,]\d+)?\s*(?:GB|TB)\s*(?:SSD|NVMe|UFS|eMMC|HDD)\b", normalize_storage_gb)
 
 
 def _storage_type(text: str) -> tuple[str, Any] | None:
@@ -148,11 +181,7 @@ def _resolution(text: str) -> tuple[str, Any] | None:
 
 
 def _screen_inches(text: str) -> tuple[str, Any] | None:
-    return _normalize_fragment(
-        text,
-        r"\b\d{1,2}(?:[.,]\d+)?\s*(?:inches|inch|in|pulgadas?|\")",
-        normalize_inches,
-    )
+    return _normalize_fragment(text, r"\b\d{1,2}(?:[.,]\d+)?\s*(?:inches|inch|in|pulgadas?|\")", normalize_inches)
 
 
 def _driver_mm(text: str) -> tuple[str, Any] | None:
@@ -242,6 +271,9 @@ def _box_contents(text: str) -> tuple[str, Any] | None:
 
 
 _FIELD_EXTRACTORS: dict[str, Extractor] = {
+    "ean": _ean,
+    "upc": _upc,
+    "gtin": _gtin,
     "bluetooth_version": _bluetooth,
     "ip_rating": _ip_rating,
     "speaker_power_w": _power,
@@ -279,12 +311,7 @@ class FactExtractor:
     only, and leaves unsupported/ambiguous fields missing.
     """
 
-    def extract(
-        self,
-        document: dict[str, Any],
-        target_fields: list[str],
-        partnumber: str,
-    ) -> list[dict[str, Any]]:
+    def extract(self, document: dict[str, Any], target_fields: list[str], partnumber: str) -> list[dict[str, Any]]:
         pn = str(partnumber or "").strip().upper()
         if not pn:
             raise ValueError("partnumber is required")
