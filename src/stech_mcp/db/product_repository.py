@@ -82,6 +82,35 @@ ORDER BY ultima_observacion DESC, producto_distribuidor_id DESC"""
             if callable(close):
                 close()
 
+    def list_for_scan(
+        self,
+        *,
+        after_partnumber: str = "",
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Page the canonical product view in stable Part Number order for background scans."""
+        after = str(after_partnumber or "").strip().upper()
+        bounded = max(1, min(int(limit), 500))
+        connection = self._connection_factory()
+        try:
+            cursor = connection.cursor()
+            if after:
+                sql = f"""SELECT TOP ({bounded}) *
+FROM {self._view_name}
+WHERE part_number > ?
+ORDER BY part_number"""
+                cursor.execute(sql, after)
+            else:
+                sql = f"""SELECT TOP ({bounded}) *
+FROM {self._view_name}
+ORDER BY part_number"""
+                cursor.execute(sql)
+            return [self._row_to_dict(cursor, row) for row in cursor.fetchall()]
+        finally:
+            close = getattr(connection, "close", None)
+            if callable(close):
+                close()
+
     def history(self, partnumber: str, *, limit: int = 25) -> list[dict[str, Any]]:
         """Devuelve observaciones reales V8; no sintetiza intervalos faltantes."""
         partnumber = str(partnumber or "").strip()

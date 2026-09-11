@@ -9,6 +9,7 @@ def test_server_registers_product_workbench_loader_vtex_and_image_tools():
         "product_loader_preview",
         "product_loader_start",
         "product_loader_job_get",
+        "product_loader_job_list",
         "product_loader_retry_item",
         "vtex_product_ensure",
         "product_image_approve",
