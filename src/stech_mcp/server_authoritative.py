@@ -13,6 +13,7 @@ import os
 from stech_mcp import server as _server
 from stech_mcp.background import BackgroundRuntime
 from stech_mcp.background_config import BackgroundConfig
+from stech_mcp.db.channel_draft_history_repository import ChannelDraftHistoryRepository
 from stech_mcp.db.channel_requirement_repository import ChannelRequirementRepository
 from stech_mcp.db.fact_candidate_repository import FactCandidateRepository
 from stech_mcp.db.product_image_candidate_repository import ProductImageCandidateRepository
@@ -146,9 +147,11 @@ channel_gap_analyzer = ChannelGapAnalyzer(
     technical_status_service=product_technical_status_service,
     image_readiness_service=product_image_readiness_service,
 )
+channel_draft_history_repository = ChannelDraftHistoryRepository(_server.mcp_connection_factory)
 channel_draft_service = ChannelDraftService(
     gap_analyzer=channel_gap_analyzer,
     draft_repository=_server.product_master_repository,
+    history_repository=channel_draft_history_repository,
 )
 product_workspace_v2_service = ProductWorkspaceV2Service(
     product_repository=_server.product_repository,
