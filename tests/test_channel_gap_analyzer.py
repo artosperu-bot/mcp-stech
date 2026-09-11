@@ -44,9 +44,13 @@ def test_required_missing_field_and_images_make_incomplete():
     assert result["state"] == "INCOMPLETE"
     by_field = {row["target_field_code"]: row for row in result["fields"]}
     assert by_field["cpu_model"]["state"] == "COMPLETE"
+    assert by_field["cpu_model"]["status"] == "COMPLETE"
     assert by_field["plug_type"]["state"] == "MISSING"
     assert by_field["sale_price"]["state"] == "CHANNEL_INPUT"
     assert result["image_readiness"]["state"] == "INCOMPLETE"
+    assert result["missing_count"] == 1
+    assert result["conflict_count"] == 0
+    assert result["completion_pct"] == 33
 
 
 def test_required_conflict_blocks_even_if_other_fields_complete():
