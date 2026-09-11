@@ -65,10 +65,54 @@ class ProductTechnicalStatusService:
         product_repository: Any,
         enrichment_repository: Any,
         schema_repository: Any,
+        deltron_specification_repository: Any | None = None,
+        deltron_adapter: Any | None = None,
     ) -> None:
         self.product_repository = product_repository
         self.enrichment_repository = enrichment_repository
         self.schema_repository = schema_repository
+
+        # Real ProductRepository owns the DB_DISTRIBUIDORES connection factory.
+        # Auto-wiring keeps worker/runtime callers compatible while the
+        # authoritative server passes these dependencies explicitly.
+        if deltron_specification_repository is None:
+            connection_factory = getattr(product_repository, "_connection_factory", None)
+            if callable(connection_factory):
+                from stech_mcp.db.deltron_specification_repository import DeltronSpecificationRepository
+
+                deltron_specification_repository = DeltronSpecificationRepository(connection_factory)
+        if deltron_adapter is None and deltron_specification_repository is not None:
+            from stech_mcp.services.deltron_fact_adapter import DeltronFactAdapter
+
+            deltron_adapter = DeltronFactAdapter()
+
+        self.deltron_specification_repository = deltron_specification_repository
+        self.deltron_adapter = deltron_adapter
+
+    def _deltron_candidates(
+        self,
+        product: dict[str, Any],
+        category_code: str,
+    ) -> list[dict[str, Any]]:
+        if self.deltron_specification_repository is None or self.deltron_adapter is None:
+            return []
+        product_id = product.get("producto_distribuidor_id")
+        if product_id in (None, ""):
+            return []
+        try:
+            product_id_int = int(product_id)
+        except (TypeError, ValueError):
+            return []
+        if product_id_int <= 0:
+            return []
+        rows = self.deltron_specification_repository.list_for_product(product_id_int)
+        return list(
+            self.deltron_adapter.adapt(
+                product,
+                category_code=category_code,
+                specifications=rows,
+            )
+        )
 
     def get(self, partnumber: str) -> dict[str, Any]:
         normalized_pn = str(partnumber or "").strip().upper()
@@ -86,25 +130,37 @@ class ProductTechnicalStatusService:
 
         schema_fields = {item.field_code for item in schema}
         known_fields: dict[str, Any] = {}
+        field_sources: dict[str, str] = {}
 
-        # Only accept already-canonical direct product keys here. Deltron
-        # atributos_json is deliberately not interpreted until the dedicated
-        # adapter/normalizers layer (Plan B Task 3).
+        # Only already-canonical product columns are accepted. The legacy
+        # atributos_json payload is deliberately ignored.
         for field_code in schema_fields:
             value = product.get(field_code)
             if _has_value(value):
                 known_fields[field_code] = value
+                field_sources[field_code] = "PRODUCT"
 
-        # Approved enrichment is canonical and has precedence over raw/direct
-        # values. Commercial fields are impossible here because only schema
-        # field codes are accepted.
+        # Deltron technical truth comes from PRD_DELTRON_ESPECIFICACION and
+        # overrides generic/direct product fields for the exact distributor PN.
+        for candidate in self._deltron_candidates(product, category_code):
+            field_code = normalize_field_code(candidate.get("field_code"))
+            if field_code not in schema_fields:
+                continue
+            value = candidate.get("normalized_value")
+            if _has_value(value):
+                known_fields[field_code] = value
+                field_sources[field_code] = "DELTRON"
+
+        # Approved enrichment may refine generic product data or fill gaps, but
+        # it never replaces a structured Deltron field for the exact PN.
         for row in self.enrichment_repository.get_approved(normalized_pn):
             field_code = normalize_field_code(row.get("field_code"))
-            if field_code not in schema_fields:
+            if field_code not in schema_fields or field_sources.get(field_code) == "DELTRON":
                 continue
             value = _approved_value(row)
             if _has_value(value):
                 known_fields[field_code] = value
+                field_sources[field_code] = "ENRICHMENT"
 
         missing_required = [
             item.field_code
@@ -123,6 +179,7 @@ class ProductTechnicalStatusService:
             "partnumber": normalized_pn,
             "category_code": category_code,
             "known_fields": known_fields,
+            "field_sources": field_sources,
             "missing_required": missing_required,
             "missing_recommended": missing_recommended,
             "conflicts": [],
