@@ -12,6 +12,7 @@ def register_product_workspace_v2_tools(
     image_readiness_service: Any,
     image_research_service: Any | None = None,
     candidate_repository: Any | None = None,
+    candidate_import_service: Any | None = None,
     channel_gap_analyzer: Any | None = None,
     channel_draft_service: Any | None = None,
     workspace_service: Any | None = None,
@@ -92,6 +93,18 @@ def register_product_workspace_v2_tools(
         return {"partnumber": pn, "count": len(rows), "candidates": rows}
 
     @mcp.tool()
+    def product_image_candidate_import(candidate_id: int) -> dict[str, Any]:
+        if candidate_import_service is None:
+            raise RuntimeError("image candidate import is not configured")
+        return candidate_import_service.import_candidate(int(candidate_id))
+
+    @mcp.tool()
+    def product_image_candidate_reject(candidate_id: int) -> dict[str, Any]:
+        if candidate_repository is None:
+            raise RuntimeError("image candidate repository is not configured")
+        return candidate_repository.set_state(int(candidate_id), "REJECTED")
+
+    @mcp.tool()
     def product_channel_gap_get(
         partnumber: str,
         channel_code: str,
@@ -100,12 +113,7 @@ def register_product_workspace_v2_tools(
     ) -> dict[str, Any]:
         if channel_gap_analyzer is None:
             return {"state": "NOT_CONFIGURED"}
-        return channel_gap_analyzer.get(
-            partnumber,
-            channel_code,
-            category_code,
-            requirements_version,
-        )
+        return channel_gap_analyzer.get(partnumber, channel_code, category_code, requirements_version)
 
     @mcp.tool()
     def product_channel_draft_prepare(
@@ -116,12 +124,7 @@ def register_product_workspace_v2_tools(
     ) -> dict[str, Any]:
         if channel_draft_service is None:
             return {"created": False, "state": "NOT_CONFIGURED"}
-        return channel_draft_service.prepare(
-            partnumber,
-            channel_code,
-            category_code,
-            requirements_version,
-        )
+        return channel_draft_service.prepare(partnumber, channel_code, category_code, requirements_version)
 
     @mcp.tool()
     def product_workspace_v2_get(partnumber: str) -> dict[str, Any]:
@@ -139,6 +142,8 @@ def register_product_workspace_v2_tools(
         "product_images_readiness": product_images_readiness,
         "product_images_research": product_images_research,
         "product_image_candidates": product_image_candidates,
+        "product_image_candidate_import": product_image_candidate_import,
+        "product_image_candidate_reject": product_image_candidate_reject,
         "product_channel_gap_get": product_channel_gap_get,
         "product_channel_draft_prepare": product_channel_draft_prepare,
         "product_workspace_v2_get": product_workspace_v2_get,
