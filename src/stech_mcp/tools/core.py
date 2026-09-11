@@ -5,6 +5,14 @@ from datetime import datetime, timezone
 from typing import Any
 
 
+_EXTRA_SNAPSHOT_PROVIDER: Callable[[], dict[str, Any]] | None = None
+
+
+def set_health_extra_provider(provider: Callable[[], dict[str, Any]] | None) -> None:
+    global _EXTRA_SNAPSHOT_PROVIDER
+    _EXTRA_SNAPSHOT_PROVIDER = provider
+
+
 def health_snapshot(
     sql_ping: Callable[[], bool],
     extra_snapshot: Callable[[], dict[str, Any]] | None = None,
@@ -20,9 +28,10 @@ def health_snapshot(
         result["sql_source_status"] = "error"
         result["detail"] = str(exc)
 
-    if extra_snapshot is not None:
+    provider = extra_snapshot or _EXTRA_SNAPSHOT_PROVIDER
+    if provider is not None:
         try:
-            extra = extra_snapshot() or {}
+            extra = provider() or {}
             if isinstance(extra, dict):
                 result.update(extra)
         except Exception as exc:
