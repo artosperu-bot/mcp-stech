@@ -20,6 +20,30 @@ def register_product_workspace_v2_tools(
 ) -> dict[str, Any]:
     """Register safe V2 controls without exposing channel publication writes."""
 
+    def _research_rows(
+        partnumbers: list[str],
+        category_code: str | None,
+        target_count: int | None,
+    ) -> list[dict[str, Any]]:
+        category = str(category_code or "").strip().upper()
+        desired = None if target_count in (None, "") else max(1, min(int(target_count), 20))
+        rows: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for raw in list(partnumbers or [])[:2000]:
+            pn = str(raw or "").strip().upper()
+            if not pn or pn in seen:
+                continue
+            seen.add(pn)
+            row: dict[str, Any] = {"partnumber": pn, "scope": "MASTER"}
+            if category:
+                row["category_code"] = category
+            if desired is not None:
+                row["image_target_count"] = desired
+            rows.append(row)
+        if not rows:
+            raise ValueError("at least one valid partnumber is required")
+        return rows
+
     @mcp.tool()
     def background_status() -> dict[str, Any]:
         return runtime.status()
@@ -48,6 +72,21 @@ def register_product_workspace_v2_tools(
         return {"count": len(rows), "by_status": dict(counts), "jobs": rows}
 
     @mcp.tool()
+    def background_job_get(job_id: int) -> dict[str, Any]:
+        row = work_service.get_job(int(job_id))
+        if row is None:
+            return {"found": False, "job_id": int(job_id)}
+        return {"found": True, **row}
+
+    @mcp.tool()
+    def background_job_retry(item_id: int) -> dict[str, Any]:
+        return work_service.retry_item(int(item_id))
+
+    @mcp.tool()
+    def background_job_cancel(item_id: int) -> dict[str, Any]:
+        return work_service.cancel_item(int(item_id))
+
+    @mcp.tool()
     def product_images_readiness(
         partnumber: str,
         category_code: str | None = None,
@@ -65,19 +104,24 @@ def register_product_workspace_v2_tools(
         category_code: str | None = None,
         target_count: int | None = None,
     ) -> dict[str, Any]:
-        pn = str(partnumber or "").strip().upper()
-        if not pn:
-            raise ValueError("partnumber is required")
-        row: dict[str, Any] = {"partnumber": pn, "scope": "MASTER"}
-        category = str(category_code or "").strip().upper()
-        if category:
-            row["category_code"] = category
-        if target_count not in (None, ""):
-            row["image_target_count"] = max(1, min(int(target_count), 20))
         return work_service.create_job(
-            rows=[row],
+            rows=_research_rows([partnumber], category_code, target_count),
             work_type="RESEARCH_IMAGES",
             source_name="MANUAL_WORKSPACE",
+            actor_source="MCP",
+            priority=100,
+        )
+
+    @mcp.tool()
+    def product_images_research_batch(
+        partnumbers: list[str],
+        category_code: str | None = None,
+        target_count: int | None = None,
+    ) -> dict[str, Any]:
+        return work_service.create_job(
+            rows=_research_rows(partnumbers, category_code, target_count),
+            work_type="RESEARCH_IMAGES",
+            source_name="MANUAL_WORKSPACE_BATCH",
             actor_source="MCP",
             priority=100,
         )
@@ -139,8 +183,12 @@ def register_product_workspace_v2_tools(
         "background_scan_now": background_scan_now,
         "background_config_get": background_config_get,
         "background_jobs_summary": background_jobs_summary,
+        "background_job_get": background_job_get,
+        "background_job_retry": background_job_retry,
+        "background_job_cancel": background_job_cancel,
         "product_images_readiness": product_images_readiness,
         "product_images_research": product_images_research,
+        "product_images_research_batch": product_images_research_batch,
         "product_image_candidates": product_image_candidates,
         "product_image_candidate_import": product_image_candidate_import,
         "product_image_candidate_reject": product_image_candidate_reject,
