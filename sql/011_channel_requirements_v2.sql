@@ -13,15 +13,25 @@ IF COL_LENGTH(N'dbo.marketplace_template', N'valid_to') IS NULL
     ALTER TABLE dbo.marketplace_template ADD valid_to DATETIME2(0) NULL;
 GO
 
+-- SQL Server compiles a whole batch before executing ALTER TABLE. Keep the
+-- ADD and every reference to requirement_level in different batches so a
+-- first-time migration works on an existing V1 schema.
 IF COL_LENGTH(N'dbo.marketplace_template_field', N'requirement_level') IS NULL
 BEGIN
     ALTER TABLE dbo.marketplace_template_field
         ADD requirement_level NVARCHAR(20) NOT NULL
             CONSTRAINT DF_marketplace_template_field_requirement_level DEFAULT(N'OPTIONAL') WITH VALUES;
-    UPDATE dbo.marketplace_template_field
-       SET requirement_level = CASE WHEN required = 1 THEN N'REQUIRED' ELSE N'OPTIONAL' END;
 END;
 GO
+
+-- Preserve richer V2 values on re-runs; only upgrade legacy required=1 rows
+-- that still carry the default OPTIONAL value created by the ADD above.
+UPDATE dbo.marketplace_template_field
+   SET requirement_level = N'REQUIRED'
+ WHERE required = 1
+   AND requirement_level = N'OPTIONAL';
+GO
+
 IF COL_LENGTH(N'dbo.marketplace_template_field', N'data_scope') IS NULL
     ALTER TABLE dbo.marketplace_template_field ADD data_scope NVARCHAR(20) NOT NULL CONSTRAINT DF_marketplace_template_field_scope DEFAULT(N'TECHNICAL') WITH VALUES;
 GO
