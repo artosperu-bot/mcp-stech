@@ -116,6 +116,16 @@ class EnrichTechnicalHandler:
                     "error_code": "PRODUCT_NOT_FOUND",
                     "error_detail": detail,
                 }
+            if requested_fields and self.external_research_enabled:
+                return {
+                    "status": "WAITING_EXTERNAL_RESEARCH",
+                    "current_step": "waiting external requested-field research",
+                    "error_code": "EXTERNAL_RESEARCH_REQUIRED",
+                    "error_detail": (
+                        "technical category is optional for PN-first requested-field research; "
+                        "scheduled ChatGPT bridge will research only the requested fields"
+                    ),
+                }
             return {
                 "status": "NO_DATA_FOUND",
                 "current_step": "technical category not found",
