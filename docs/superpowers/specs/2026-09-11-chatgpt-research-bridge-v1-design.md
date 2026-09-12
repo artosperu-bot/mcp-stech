@@ -275,3 +275,51 @@ Para un PN real sin imágenes locales ni Deltron, el sistema debe:
 6. sobrevivir a reinicios sin duplicar trabajo.
 
 No se considera éxito que un item termine rápido en `NO_DATA_FOUND` únicamente porque Brave no está configurado.
+
+## Aceptación local en PC020
+
+No mergear antes de completar esta prueba.
+
+```powershell
+Set-Location "C:\DESAROLLO\mcp-stech"
+
+git fetch origin
+git switch feat/chatgpt-research-bridge-v1
+git pull --ff-only origin feat/chatgpt-research-bridge-v1
+
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+```
+
+Aplicar una sola vez la migración nueva en `STECH_MCP`:
+
+```powershell
+sqlcmd -S PC020 -d STECH_MCP -E -C -b -i ".\sql\013_chatgpt_research_bridge_v1.sql"
+```
+
+En `.env`, mantener Brave vacío si no se desea usarlo y activar el bridge:
+
+```env
+STECH_BRAVE_SEARCH_API_KEY=
+STECH_CHATGPT_BRIDGE_ENABLED=true
+STECH_RESEARCH_GIT_REPO=C:\DESAROLLO\mcp-stech
+STECH_RESEARCH_GIT_BRANCH=feat/chatgpt-research-bridge-v1
+STECH_RESEARCH_MAX_EXPORT_PER_CYCLE=10
+STECH_RESEARCH_MAX_IMPORT_PER_CYCLE=20
+STECH_RESEARCH_POLL_SECONDS=60
+```
+
+Reiniciar `stech-mcp.exe` y `stech-enrichment-worker.exe`. Probar primero un solo ciclo del bridge:
+
+```powershell
+.\.venv\Scripts\stech-chatgpt-bridge.exe --once
+```
+
+Después de reintentar un `RESEARCH_IMAGES` previamente fallido, el resultado esperado del primer ciclo es un item `WAITING_EXTERNAL_RESEARCH` y un archivo nuevo bajo `research_bridge/requests/`. La tarea programada de ChatGPT investiga ese request y crea `research_bridge/results/<request_id>.json`. En el siguiente ciclo local:
+
+```powershell
+.\.venv\Scripts\stech-chatgpt-bridge.exe --once
+```
+
+el resultado debe importarse como candidato y quedar `REVIEW_REQUIRED`; también debe crearse `research_bridge/receipts/<request_id>.json`. Ejecutar el mismo ciclo nuevamente no debe duplicar el candidato ni el receipt.
+
+Solo después de validar este recorrido con un PN real en PC020 se puede considerar el V1 apto para merge.
