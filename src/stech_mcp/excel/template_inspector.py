@@ -5,12 +5,13 @@ from pathlib import Path
 from typing import Iterable
 
 from openpyxl import load_workbook
-from openpyxl.utils import get_column_letter
+from openpyxl.utils import get_column_letter, range_boundaries
 
 from stech_mcp.excel.template_models import TemplateField, TemplateSchema
 
 
 _ATTRIBUTE_ID_RE = re.compile(r"#([A-Za-z0-9_-]+)\b")
+_SHEET_RANGE_RE = re.compile(r"^(?:'((?:[^']|'')+)'|([^!]+))!([A-Za-z$0-9:]+)$")
 _AUXILIARY_SHEETS = {"OPCIONES", "MARCAS", "CATEGORÍAS", "CATEGORIAS"}
 
 
@@ -31,7 +32,25 @@ def _first_column_values(workbook, sheet_names: tuple[str, ...]) -> tuple[str, .
     return ()
 
 
-def _inline_validation_values(worksheet, column: int, data_row: int) -> tuple[str, ...]:
+def _range_validation_values(workbook, formula: str) -> tuple[str, ...]:
+    normalized = formula.strip().lstrip("=")
+    match = _SHEET_RANGE_RE.fullmatch(normalized)
+    if match is None:
+        return ()
+    sheet_name = (match.group(1) or match.group(2) or "").replace("''", "'").strip()
+    if sheet_name not in workbook.sheetnames:
+        return ()
+    cell_range = match.group(3).replace("$", "")
+    min_col, min_row, max_col, max_row = range_boundaries(cell_range)
+    worksheet = workbook[sheet_name]
+    return _clean_values(
+        worksheet.cell(row=row, column=column).value
+        for row in range(min_row, max_row + 1)
+        for column in range(min_col, max_col + 1)
+    )
+
+
+def _validation_values(workbook, worksheet, column: int, data_row: int) -> tuple[str, ...]:
     validations = getattr(getattr(worksheet, "data_validations", None), "dataValidation", []) or []
     for validation in validations:
         if str(getattr(validation, "type", "") or "").strip().lower() != "list":
@@ -47,6 +66,9 @@ def _inline_validation_values(worksheet, column: int, data_row: int) -> tuple[st
         formula = str(getattr(validation, "formula1", "") or "").strip()
         if len(formula) >= 2 and formula.startswith('"') and formula.endswith('"'):
             return _clean_values(value.strip() for value in formula[1:-1].split(","))
+        referenced = _range_validation_values(workbook, formula)
+        if referenced:
+            return referenced
     return ()
 
 
@@ -94,7 +116,8 @@ class TemplateInspector:
                         column_letter=get_column_letter(column),
                         attribute_id=match.group(1) if match else None,
                         required="*" in header,
-                        allowed_values=_inline_validation_values(
+                        allowed_values=_validation_values(
+                            workbook,
                             worksheet,
                             column,
                             header_row + 1,
