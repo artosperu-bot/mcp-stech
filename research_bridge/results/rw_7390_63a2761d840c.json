@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "request_id": "rw_7390_63a2761d840c",
+  "partnumber": "0435B009AB",
+  "work_type": "RESEARCH_IMAGES",
+  "researched_at": "2026-09-12T15:45:03+00:00",
+  "status": "NO_VERIFIED_EVIDENCE",
+  "sources": [
+    {
+      "page_url": "https://www.loginstore.com/producto/mscancr55/scanner-canon-cr-55",
+      "source_domain": "loginstore.com",
+      "source_type": "DISTRIBUTOR",
+      "title": "Canon Scanner CR-55",
+      "exact_partnumber_match": true
+    },
+    {
+      "page_url": "https://www.deltron.com.pe/modulos/productos/items/buscadorWeb.php?brand=Canon&q=CANON",
+      "source_domain": "deltron.com.pe",
+      "source_type": "DISTRIBUTOR",
+      "title": "Canon CR-55 0435B009AB",
+      "exact_partnumber_match": true
+    }
+  ],
+  "image_candidates": [],
+  "identity_candidates": [],
+  "technical_candidates": [],
+  "notes": "Multiple distributor pages explicitly identify Canon CR-55 Part Number 0435B009AB, but no direct image URL tied to the exact part was verifiable from the retrieved source pages."
+}
