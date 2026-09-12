@@ -1,6 +1,16 @@
 SET NOCOUNT ON;
 SET XACT_ABORT ON;
 
+-- Required by SQL Server for filtered indexes. Keep these explicit so the
+-- migration behaves the same from sqlcmd, SSMS, or any other client session.
+SET ANSI_NULLS ON;
+SET QUOTED_IDENTIFIER ON;
+SET ANSI_PADDING ON;
+SET ANSI_WARNINGS ON;
+SET ARITHABORT ON;
+SET CONCAT_NULL_YIELDS_NULL ON;
+SET NUMERIC_ROUNDABORT OFF;
+
 /*
 ChatGPT Research Bridge V1
 --------------------------
