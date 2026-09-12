@@ -135,9 +135,8 @@ def _base_connection_parts(settings: Settings, database: str) -> list[str]:
     ]
 
 
-def build_source_connection_string(settings: Settings, database: str | None = None) -> str:
-    target_database = database or settings.stech_sql_database
-    parts = _base_connection_parts(settings, target_database)
+def build_source_connection_string(settings: Settings) -> str:
+    parts = _base_connection_parts(settings, settings.stech_sql_database)
     if settings.stech_sql_auth == "windows":
         parts.append("Trusted_Connection=yes")
     else:
