@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import threading
 import time
 from typing import Any
 
@@ -77,6 +78,28 @@ class BridgeRunner:
         while True:
             self.run_once()
             self.sleep_fn(self.poll_seconds)
+
+
+def start_bridge_thread(
+    config: BridgeConfig,
+    runner: BridgeRunner,
+    *,
+    thread_factory: Any = threading.Thread,
+) -> Any | None:
+    """Run the local Git mailbox bridge inside the main STECH-MCP process.
+
+    The scheduled ChatGPT task remains hourly and cloud-side; this daemon only
+    exports WAITING_EXTERNAL_RESEARCH requests and imports finished result files.
+    """
+    if not config.enabled:
+        return None
+    thread = thread_factory(
+        target=runner.run_forever,
+        name="stech-chatgpt-bridge",
+        daemon=True,
+    )
+    thread.start()
+    return thread
 
 
 def build_runner_from_environment() -> tuple[BridgeConfig, BridgeRunner]:
