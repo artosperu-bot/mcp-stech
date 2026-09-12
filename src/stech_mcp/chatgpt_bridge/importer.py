@@ -129,24 +129,39 @@ class BridgeResultImporter:
             count += int(added)
         return count
 
-    def _technical_fields(self, request: ResearchRequestV1) -> set[str]:
-        if self.schema_repository is None or not request.category_code:
-            return set()
-        return {
-            normalize_field_code(getattr(field, "field_code", None))
-            for field in self.schema_repository.get_category_schema(request.category_code)
-            if normalize_field_code(getattr(field, "field_code", None))
+    def _technical_fields(self, request: ResearchRequestV1) -> tuple[set[str], str]:
+        requested = {
+            normalize_field_code(value)
+            for value in request.requested_fields
+            if normalize_field_code(value)
         }
+        schema_fields: set[str] = set()
+        if self.schema_repository is not None and request.category_code:
+            schema_fields = {
+                normalize_field_code(getattr(field, "field_code", None))
+                for field in self.schema_repository.get_category_schema(request.category_code)
+                if normalize_field_code(getattr(field, "field_code", None))
+            }
+
+        if schema_fields and requested:
+            return schema_fields & requested, "SCHEMA_AND_REQUEST"
+        if schema_fields:
+            return schema_fields, "SCHEMA"
+        if requested:
+            return requested, "REQUESTED_FIELDS"
+        return set(), "NONE"
 
     def _import_technical(self, request: ResearchRequestV1, result: ResearchResultV1) -> int:
-        allowed = self._technical_fields(request)
+        allowed, scope_source = self._technical_fields(request)
         if not allowed:
-            raise ValueError("technical schema could not be resolved")
+            raise ValueError("technical field scope could not be resolved")
         count = 0
         for candidate in result.technical_candidates:
             field_code = normalize_field_code(candidate.field_name)
             if field_code not in allowed:
-                raise ValueError(f"field is outside technical schema: {field_code}")
+                if scope_source == "REQUESTED_FIELDS":
+                    raise ValueError(f"field is outside requested technical fields: {field_code}")
+                raise ValueError(f"field is outside technical schema/request scope: {field_code}")
             exact = bool(candidate.exact_partnumber_match)
             added = self._add_fact_once(
                 request,
