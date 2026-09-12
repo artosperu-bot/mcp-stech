@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "request_id": "rw_7385_5c8d54704d69",
+  "partnumber": "03B03-00427700",
+  "work_type": "RESEARCH_IMAGES",
+  "researched_at": "2026-09-12T15:45:03+00:00",
+  "status": "NO_VERIFIED_EVIDENCE",
+  "sources": [],
+  "image_candidates": [],
+  "identity_candidates": [],
+  "technical_candidates": [],
+  "notes": "No public source was found that both explicitly matched exact Part Number 03B03-00427700 and exposed a verifiable image candidate."
+}
