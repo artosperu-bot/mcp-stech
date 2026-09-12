@@ -9,6 +9,7 @@ legacy Product Loader or marketplace behavior.
 """
 
 import os
+import sys
 
 from stech_mcp import server as _server
 from stech_mcp.background import BackgroundRuntime
@@ -205,7 +206,10 @@ def _start_chatgpt_bridge_if_enabled() -> None:
         _chatgpt_bridge_error = None
     except Exception as exc:
         _chatgpt_bridge_error = f"{type(exc).__name__}: {exc}"
-        print(f"STECH ChatGPT Research Bridge startup error: {_chatgpt_bridge_error}")
+        print(
+            f"STECH ChatGPT Research Bridge startup error: {_chatgpt_bridge_error}",
+            file=sys.stderr,
+        )
 
 
 def main() -> None:
