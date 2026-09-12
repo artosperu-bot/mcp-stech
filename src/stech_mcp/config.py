@@ -77,6 +77,10 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("STECH_SEARCH_LANGUAGE", "STECH_SEARCH_LANG"),
     )
 
+    # Scheduled ChatGPT research bridge. Disabled by default until the mailbox
+    # bridge is explicitly enabled on PC020. No API key is required.
+    stech_chatgpt_bridge_enabled: bool = False
+
     # VTEX image sync. The existing V8 channel credential names are accepted as
     # aliases so PC020 can reuse the same API credential pair without renaming it.
     stech_image_root: str = r"C:\STECH_IMAGENES"
