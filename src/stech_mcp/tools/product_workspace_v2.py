@@ -1,9 +1,48 @@
 from __future__ import annotations
 
 from collections import Counter
+import re
 from typing import Any
 
 from stech_mcp.tools.core import set_health_extra_provider
+
+
+_IDENTITY_FIELDS = {
+    "ean",
+    "upc",
+    "gtin",
+    "gtin_8",
+    "gtin_12",
+    "gtin_13",
+    "gtin_14",
+    "barcode",
+    "codigo_barras",
+    "codigo_de_barras",
+}
+
+
+def _field_key(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    text = re.sub(r"#\s*\d+\s*$", "", text).strip()
+    text = (
+        text.replace("á", "a")
+        .replace("é", "e")
+        .replace("í", "i")
+        .replace("ó", "o")
+        .replace("ú", "u")
+        .replace("ñ", "n")
+    )
+    return re.sub(r"[^a-z0-9]+", "_", text).strip("_")
+
+
+def _has_value(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, tuple, set, dict)):
+        return bool(value)
+    return True
 
 
 def register_product_workspace_v2_tools(
@@ -22,6 +61,19 @@ def register_product_workspace_v2_tools(
 ) -> dict[str, Any]:
     """Register safe V2 controls without exposing channel publication writes."""
 
+    def _normalize_partnumbers(partnumbers: list[str]) -> list[str]:
+        rows: list[str] = []
+        seen: set[str] = set()
+        for raw in list(partnumbers or [])[:2000]:
+            pn = str(raw or "").strip().upper()
+            if not pn or pn in seen:
+                continue
+            seen.add(pn)
+            rows.append(pn)
+        if not rows:
+            raise ValueError("at least one valid partnumber is required")
+        return rows
+
     def _research_rows(
         partnumbers: list[str],
         category_code: str | None,
@@ -30,20 +82,13 @@ def register_product_workspace_v2_tools(
         category = str(category_code or "").strip().upper()
         desired = None if target_count in (None, "") else max(1, min(int(target_count), 20))
         rows: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        for raw in list(partnumbers or [])[:2000]:
-            pn = str(raw or "").strip().upper()
-            if not pn or pn in seen:
-                continue
-            seen.add(pn)
+        for pn in _normalize_partnumbers(partnumbers):
             row: dict[str, Any] = {"partnumber": pn, "scope": "MASTER"}
             if category:
                 row["category_code"] = category
             if desired is not None:
                 row["image_target_count"] = desired
             rows.append(row)
-        if not rows:
-            raise ValueError("at least one valid partnumber is required")
         return rows
 
     def _health_extra() -> dict[str, Any]:
@@ -142,6 +187,179 @@ def register_product_workspace_v2_tools(
         )
 
     @mcp.tool()
+    def product_workspace_smart_complete(
+        partnumbers: list[str],
+        requested_fields: list[str] | None = None,
+        image_target_count: int | None = None,
+        category_code: str | None = None,
+        channel_code: str | None = None,
+        template_code: str | None = None,
+        requirements_version: str | None = None,
+        source_name: str = "SCR_SMART_COMPLETE",
+    ) -> dict[str, Any]:
+        """Queue only the work required by the requested template fields.
+
+        The caller may provide PNs that already exist in Product Workspace or new/manual
+        PNs. Existing verified values and sufficient local images are reused. This tool
+        never writes price, stock, cost, publication state or marketplace inventory.
+        """
+
+        pns = _normalize_partnumbers(partnumbers)
+        category = str(category_code or "").strip().upper() or None
+        channel = str(channel_code or "").strip().upper() or None
+        template = str(template_code or "").strip() or None
+        version = str(requirements_version or "").strip() or None
+        source = str(source_name or "").strip() or "SCR_SMART_COMPLETE"
+        target = None if image_target_count in (None, "") else max(0, min(int(image_target_count), 20))
+
+        requested: list[tuple[str, str]] = []
+        seen_fields: set[str] = set()
+        for raw in list(requested_fields or []):
+            label = str(raw or "").strip()
+            key = _field_key(label)
+            if not key or key in seen_fields:
+                continue
+            seen_fields.add(key)
+            requested.append((label, key))
+
+        technical_rows: list[dict[str, Any]] = []
+        identity_rows: list[dict[str, Any]] = []
+        image_rows: list[dict[str, Any]] = []
+        result_items: list[dict[str, Any]] = []
+
+        for pn in pns:
+            workspace = (
+                workspace_service.get(pn)
+                if workspace_service is not None
+                else {"found": False, "partnumber": pn}
+            )
+            found = bool(workspace.get("found"))
+            technical = dict(workspace.get("technical") or {})
+            master = dict(workspace.get("master") or {})
+            known = dict(technical.get("known_fields") or {})
+
+            normalized_known: dict[str, Any] = {}
+            for key, value in {**master, **known}.items():
+                normalized_known[_field_key(key)] = value
+
+            # Canonical identity aliases: a verified EAN/UPC can satisfy generic GTIN/barcode.
+            generic_identity = next(
+                (
+                    value
+                    for key in ("ean", "upc", "gtin", "barcode")
+                    if _has_value(normalized_known.get(key))
+                    for value in [normalized_known[key]]
+                ),
+                None,
+            )
+            if _has_value(generic_identity):
+                normalized_known.setdefault("gtin", generic_identity)
+                normalized_known.setdefault("barcode", generic_identity)
+                normalized_known.setdefault("codigo_barras", generic_identity)
+                normalized_known.setdefault("codigo_de_barras", generic_identity)
+
+            missing_pairs = [
+                (label, key)
+                for label, key in requested
+                if not _has_value(normalized_known.get(key))
+            ]
+            missing_identity = [label for label, key in missing_pairs if key in _IDENTITY_FIELDS]
+            missing_technical = [label for label, key in missing_pairs if key not in _IDENTITY_FIELDS]
+
+            image_state = image_readiness_service.get(
+                pn,
+                category_code=category,
+                channel_code=channel or "MASTER",
+            )
+            current_images = int(image_state.get("image_count") or 0)
+            effective_target = current_images if target is None else target
+            image_missing = max(0, effective_target - current_images)
+
+            context: dict[str, Any] = {
+                "partnumber": pn,
+                "scope": "TEMPLATE_SMART_COMPLETE",
+            }
+            if category:
+                context["category_code"] = category
+            if channel:
+                context["channel_code"] = channel
+            if template:
+                context["template_code"] = template
+            if version:
+                context["requirements_version"] = version
+
+            if missing_technical:
+                technical_rows.append({**context, "requested_fields": missing_technical})
+            if missing_identity:
+                identity_rows.append(
+                    {
+                        "partnumber": pn,
+                        "scope": "TEMPLATE_SMART_COMPLETE",
+                        "requested_fields": missing_identity,
+                    }
+                )
+            if image_missing > 0:
+                image_row = dict(context)
+                image_row["image_target_count"] = effective_target
+                image_row["image_missing_count"] = image_missing
+                image_rows.append(image_row)
+
+            missing_fields = [label for label, _key in missing_pairs]
+            has_work = bool(missing_fields or image_missing)
+            result_items.append(
+                {
+                    "partnumber": pn,
+                    "found": found,
+                    "state": "PROCESSING" if has_work else "READY",
+                    "requested_fields": len(requested),
+                    "resolved_fields": len(requested) - len(missing_fields),
+                    "missing_fields": missing_fields,
+                    "images": {
+                        "current": current_images,
+                        "target": effective_target,
+                        "missing": image_missing,
+                    },
+                }
+            )
+
+        jobs: dict[str, Any] = {}
+        if technical_rows:
+            jobs["technical"] = work_service.create_job(
+                rows=technical_rows,
+                work_type="ENRICH_TECHNICAL",
+                source_name=source,
+                actor_source="SCR_UI",
+                priority=90,
+            )
+        if identity_rows:
+            jobs["identity"] = work_service.create_job(
+                rows=identity_rows,
+                work_type="RESEARCH_IDENTITY",
+                source_name=source,
+                actor_source="SCR_UI",
+                priority=95,
+            )
+        if image_rows:
+            jobs["images"] = work_service.create_job(
+                rows=image_rows,
+                work_type="RESEARCH_IMAGES",
+                source_name=source,
+                actor_source="SCR_UI",
+                priority=90,
+            )
+
+        ready_count = sum(1 for row in result_items if row["state"] == "READY")
+        return {
+            "requested_count": len(pns),
+            "ready_count": ready_count,
+            "processing_count": len(pns) - ready_count,
+            "requested_field_count": len(requested),
+            "image_target_count": target,
+            "jobs": jobs,
+            "items": result_items,
+        }
+
+    @mcp.tool()
     def product_image_candidates(partnumber: str) -> dict[str, Any]:
         pn = str(partnumber or "").strip().upper()
         if not pn:
@@ -204,6 +422,7 @@ def register_product_workspace_v2_tools(
         "product_images_readiness": product_images_readiness,
         "product_images_research": product_images_research,
         "product_images_research_batch": product_images_research_batch,
+        "product_workspace_smart_complete": product_workspace_smart_complete,
         "product_image_candidates": product_image_candidates,
         "product_image_candidate_import": product_image_candidate_import,
         "product_image_candidate_reject": product_image_candidate_reject,
