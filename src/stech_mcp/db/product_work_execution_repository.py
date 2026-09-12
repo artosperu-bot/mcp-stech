@@ -65,25 +65,13 @@ VALUES (?, ?, ?, ?, N'WORKER', ?, ?);
     def record_attempt_start(self, item: dict[str, Any], worker_id: str) -> dict[str, int]:
         job_id = int(item.get("job_id") or item.get("product_work_job_id"))
         item_id = int(item.get("item_id") or item.get("product_work_item_id"))
+        attempt_number = int(item.get("attempt_count") or 0)
+        if attempt_number <= 0:
+            raise ValueError("product work item has not been claimed for an attempt")
+
         conn = self.connection_factory()
         try:
             cur = conn.cursor()
-            cur.execute(
-                """
-UPDATE dbo.product_work_item WITH (UPDLOCK, ROWLOCK)
-SET attempt_count = attempt_count + 1,
-    updated_at = SYSUTCDATETIME()
-OUTPUT INSERTED.attempt_count
-WHERE product_work_item_id = ?
-  AND attempt_count < max_attempts;
-""",
-                item_id,
-            )
-            attempt_row = cur.fetchone()
-            if attempt_row is None:
-                raise ValueError("max attempts reached or product work item not found")
-            attempt_number = int(attempt_row[0])
-
             cur.execute(
                 """
 INSERT INTO dbo.product_work_attempt(
