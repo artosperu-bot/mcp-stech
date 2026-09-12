@@ -77,9 +77,13 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("STECH_SEARCH_LANGUAGE", "STECH_SEARCH_LANG"),
     )
 
-    # Scheduled ChatGPT research bridge. Disabled by default until the mailbox
-    # bridge is explicitly enabled on PC020. No API key is required.
+    # Scheduled ChatGPT research bridge. No OpenAI/Brave API key is required.
     stech_chatgpt_bridge_enabled: bool = False
+    stech_research_git_repo: str = "."
+    stech_research_git_branch: str = "feat/chatgpt-research-bridge-v1"
+    stech_research_max_export_per_cycle: int = Field(default=10, ge=1, le=100)
+    stech_research_max_import_per_cycle: int = Field(default=20, ge=1, le=100)
+    stech_research_poll_seconds: int = Field(default=60, ge=1, le=3600)
 
     # VTEX image sync. The existing V8 channel credential names are accepted as
     # aliases so PC020 can reuse the same API credential pair without renaming it.
@@ -103,9 +107,6 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _derive_legacy_auth(self) -> "Settings":
-        # Si stech_sql_auth fue provisto explícitamente (constructor, entorno o .env),
-        # siempre gana. Solo derivamos la autenticación desde DIST_SQL_TRUSTED_CONNECTION
-        # cuando stech_sql_auth conserva su valor por defecto.
         if "stech_sql_auth" not in self.model_fields_set and self.dist_sql_trusted_connection is not None:
             self.stech_sql_auth = "windows" if self.dist_sql_trusted_connection else "sql"
         if self.vtex_image_url_ttl_seconds <= 0:
@@ -115,12 +116,7 @@ class Settings(BaseSettings):
         return self
 
     def vtex_image_signing_secret_value(self) -> str:
-        """Return explicit secret or lazily generate one for this MCP process.
-
-        Signed image URLs live only a few minutes, so invalidating outstanding
-        URLs after a process restart is safe and removes a manual setup step.
-        """
-
+        """Return explicit secret or lazily generate one for this MCP process."""
         explicit = str(self.vtex_image_signing_secret or "").strip()
         if explicit:
             return explicit
