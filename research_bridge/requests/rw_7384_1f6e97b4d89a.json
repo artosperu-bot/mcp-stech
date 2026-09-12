@@ -1,0 +1,21 @@
+{
+  "brand": "HP COMERCIAL",
+  "category_code": null,
+  "created_at": "2026-09-12T14:43:06.604000",
+  "model": null,
+  "partnumber": "02170477",
+  "product_work_item_id": 7384,
+  "product_work_job_id": 176,
+  "request_id": "rw_7384_1f6e97b4d89a",
+  "requested_fields": [
+    "images"
+  ],
+  "research_policy": {
+    "exact_partnumber_required": true,
+    "max_candidates": 10,
+    "max_sources": 5,
+    "prefer_official_sources": true
+  },
+  "schema_version": 1,
+  "work_type": "RESEARCH_IMAGES"
+}

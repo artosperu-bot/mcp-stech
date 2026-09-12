@@ -1,0 +1,123 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+from stech_mcp.chatgpt_bridge.contracts import ResearchRequestV1
+from stech_mcp.chatgpt_bridge.mailbox import Mailbox
+from stech_mcp.chatgpt_bridge.runner import BridgeRunner
+
+
+class Transport:
+    def __init__(self):
+        self.calls = []
+
+    def pull(self):
+        self.calls.append("pull")
+
+    def commit_and_push(self):
+        self.calls.append("push")
+        return True
+
+
+class Exporter:
+    def __init__(self):
+        self.calls = []
+
+    def export_waiting(self, *, limit):
+        self.calls.append(limit)
+        return []
+
+
+class Importer:
+    def __init__(self):
+        self.calls = []
+
+    def import_result(self, request, result):
+        self.calls.append((request, result))
+        return {"status": "REVIEW_REQUIRED", "imported": 1}
+
+
+def request_payload():
+    return ResearchRequestV1.model_validate(
+        {
+            "request_id": "rw_1234_a1b2c3d4e5f6",
+            "created_at": datetime(2026, 9, 11, 22, 30, tzinfo=timezone.utc),
+            "product_work_item_id": 1234,
+            "product_work_job_id": 140,
+            "work_type": "RESEARCH_IMAGES",
+            "partnumber": "PN1",
+            "requested_fields": ["images"],
+            "research_policy": {},
+        }
+    )
+
+
+def test_run_once_pulls_imports_receipts_exports_then_pushes(tmp_path):
+    mailbox = Mailbox(tmp_path)
+    request = request_payload()
+    mailbox.write_request(request)
+    result_path = tmp_path / "research_bridge" / "results" / f"{request.request_id}.json"
+    result_path.write_text(
+        """{
+          "schema_version": 1,
+          "request_id": "rw_1234_a1b2c3d4e5f6",
+          "partnumber": "PN1",
+          "work_type": "RESEARCH_IMAGES",
+          "researched_at": "2026-09-11T22:40:00Z",
+          "status": "EVIDENCE_FOUND",
+          "sources": [],
+          "image_candidates": [{
+            "image_url": "https://brand.example/pn1.jpg",
+            "page_url": "https://brand.example/pn1",
+            "exact_partnumber_match": true
+          }],
+          "identity_candidates": [],
+          "technical_candidates": [],
+          "notes": ""
+        }""",
+        encoding="utf-8",
+    )
+    transport = Transport()
+    exporter = Exporter()
+    importer = Importer()
+    runner = BridgeRunner(
+        mailbox=mailbox,
+        transport=transport,
+        exporter=exporter,
+        importer=importer,
+        max_export_per_cycle=10,
+        max_import_per_cycle=20,
+    )
+
+    summary = runner.run_once()
+
+    assert transport.calls == ["pull", "push"]
+    assert exporter.calls == [10]
+    assert len(importer.calls) == 1
+    assert summary == {"imported": 1, "exported": 0, "pushed": True}
+    receipt = tmp_path / "research_bridge" / "receipts" / f"{request.request_id}.json"
+    assert receipt.exists()
+
+
+def test_run_once_does_not_create_receipt_when_import_fails(tmp_path):
+    mailbox = Mailbox(tmp_path)
+    request = request_payload()
+    mailbox.write_request(request)
+    result_path = tmp_path / "research_bridge" / "results" / f"{request.request_id}.json"
+    result_path.write_text('{"bad":"payload"}', encoding="utf-8")
+    runner = BridgeRunner(
+        mailbox=mailbox,
+        transport=Transport(),
+        exporter=Exporter(),
+        importer=Importer(),
+        max_export_per_cycle=10,
+        max_import_per_cycle=20,
+    )
+
+    try:
+        runner.run_once()
+    except Exception:
+        pass
+
+    receipt = tmp_path / "research_bridge" / "receipts" / f"{request.request_id}.json"
+    assert not receipt.exists()

@@ -27,6 +27,7 @@ dev = ["pytest>=8.4,<10"]
 stech-mcp = "stech_mcp.server_authoritative:main"
 stech-mcp-check = "stech_mcp.check:main"
 stech-enrichment-worker = "stech_mcp.worker:main"
+stech-chatgpt-bridge = "stech_mcp.chatgpt_bridge.runner:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

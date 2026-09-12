@@ -5,13 +5,15 @@ from typing import Any
 import httpx
 
 from stech_mcp.services.product_work_dispatcher import RetryableWorkError
+from stech_mcp.services.research.search_provider import SearchProviderNotConfigured
 
 
 class ResearchImagesHandler:
     """Map image research results to Product Work queue outcomes."""
 
-    def __init__(self, service: Any) -> None:
+    def __init__(self, service: Any, *, external_research_enabled: bool = False) -> None:
         self.service = service
+        self.external_research_enabled = bool(external_research_enabled)
 
     @staticmethod
     def _input(item: dict[str, Any]) -> dict[str, Any]:
@@ -30,6 +32,20 @@ class ResearchImagesHandler:
                 category_code=category_code,
                 target_count=target_count,
             )
+        except SearchProviderNotConfigured as exc:
+            if self.external_research_enabled:
+                return {
+                    "status": "WAITING_EXTERNAL_RESEARCH",
+                    "current_step": "waiting external research",
+                    "error_code": "EXTERNAL_RESEARCH_REQUIRED",
+                    "error_detail": str(exc),
+                }
+            return {
+                "status": "NO_DATA_FOUND",
+                "current_step": "image search provider not configured",
+                "error_code": "SEARCH_PROVIDER_NOT_CONFIGURED",
+                "error_detail": str(exc),
+            }
         except LookupError as exc:
             return {
                 "status": "NO_DATA_FOUND",

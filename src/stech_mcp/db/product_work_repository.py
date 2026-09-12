@@ -145,6 +145,7 @@ WHERE product_work_item_id = ?
                 raise ValueError(f"invalid transition: {current} -> {target}")
 
             terminal = target in {"COMPLETED", "PARTIAL", "REVIEW_REQUIRED", "NO_DATA_FOUND", "FAILED", "CANCELLED"}
+            release_claim = terminal or target == "WAITING_EXTERNAL_RESEARCH"
             cur.execute(
                 """
 UPDATE dbo.product_work_item
@@ -184,9 +185,9 @@ WHERE product_work_item_id = ?;
                 error_code,
                 error_detail,
                 int(terminal),
-                int(terminal),
-                int(terminal),
-                int(terminal),
+                int(release_claim),
+                int(release_claim),
+                int(release_claim),
                 int(item_id),
             )
             row = self._decode_item(self._row_dict(cur, cur.fetchone()))

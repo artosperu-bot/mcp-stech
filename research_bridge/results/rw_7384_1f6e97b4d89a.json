@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "request_id": "rw_7384_1f6e97b4d89a",
+  "partnumber": "02170477",
+  "work_type": "RESEARCH_IMAGES",
+  "researched_at": "2026-09-12T15:45:03+00:00",
+  "status": "EVIDENCE_FOUND",
+  "sources": [
+    {
+      "page_url": "https://ekit.huawei.com/ekit/front/ssr/en/product/40593",
+      "source_domain": "ekit.huawei.com",
+      "source_type": "OFFICIAL",
+      "title": "HUAWEI eKit IdeaShare Key (Type-C)",
+      "exact_partnumber_match": true
+    }
+  ],
+  "image_candidates": [
+    {
+      "image_url": "https://unistar.huawei.com/api/sctnext/uiservice/rs/edmLoad/image/M2T1A273N886548288509247590?X-HW-ID=app_000000035060",
+      "page_url": "https://ekit.huawei.com/ekit/front/ssr/en/product/40593",
+      "title": "HUAWEI IdeaShare Key Type-C official product image",
+      "width": null,
+      "height": null,
+      "exact_partnumber_match": true
+    },
+    {
+      "image_url": "https://unistar.huawei.com/api/sctnext/uiservice/rs/edmLoad/image/M2T1A273N886548288219648176?X-HW-ID=app_000000035060",
+      "page_url": "https://ekit.huawei.com/ekit/front/ssr/en/product/40593",
+      "title": "HUAWEI IdeaShare Key Type-C official alternate image",
+      "width": null,
+      "height": null,
+      "exact_partnumber_match": true
+    }
+  ],
+  "identity_candidates": [],
+  "technical_candidates": [],
+  "notes": "Official HUAWEI eKit product page explicitly identifies Part number 02170477 and exposes official product images. Request brand label said HP COMERCIAL, but exact part-number evidence identifies Huawei; no inference from the incorrect brand label was used."
+}

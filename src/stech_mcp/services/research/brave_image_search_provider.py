@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 import httpx
 
 from stech_mcp.services.research.image_search_provider import ImageSearchResult
+from stech_mcp.services.research.search_provider import SearchProviderNotConfigured
 
 
 _BRAVE_IMAGE_SEARCH_URL = "https://api.search.brave.com/res/v1/images/search"
@@ -29,7 +30,7 @@ class BraveImageSearchProvider:
 
     def search(self, query: str, count: int = 10) -> list[ImageSearchResult]:
         if not self.api_key:
-            return []
+            raise SearchProviderNotConfigured("Brave Image Search API key is not configured")
         text = " ".join(str(query or "").split())
         if not text:
             raise ValueError("query is required")

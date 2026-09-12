@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "request_id": "rw_7386_382e3efb75c4",
+  "partnumber": "04012-00010100",
+  "work_type": "RESEARCH_IMAGES",
+  "researched_at": "2026-09-12T15:45:03+00:00",
+  "status": "NO_VERIFIED_EVIDENCE",
+  "sources": [
+    {
+      "page_url": "https://www.zandparts.com/en/product/asus-04012-00010100",
+      "source_domain": "zandparts.com",
+      "source_type": "DISTRIBUTOR",
+      "title": "Asus AUDIO MODULE 4OHM SPEAKER",
+      "exact_partnumber_match": true
+    }
+  ],
+  "image_candidates": [],
+  "identity_candidates": [],
+  "technical_candidates": [],
+  "notes": "Exact Part Number 04012-00010100 was confirmed on a spare-parts source, but no direct image URL could be verified from that exact source page, so no image candidate is returned."
+}

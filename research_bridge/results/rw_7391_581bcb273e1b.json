@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "request_id": "rw_7391_581bcb273e1b",
+  "partnumber": "08201-05582000",
+  "work_type": "RESEARCH_IMAGES",
+  "researched_at": "2026-09-12T15:45:03+00:00",
+  "status": "NO_VERIFIED_EVIDENCE",
+  "sources": [
+    {
+      "page_url": "https://www.deltron.com.pe/modulos/productos/items/postsql.php?mproduct=todo&pmarca=M000037",
+      "source_domain": "deltron.com.pe",
+      "source_type": "DISTRIBUTOR",
+      "title": "ASUS 08201-05582000 S5408QA_IO_FPC_R2.0",
+      "exact_partnumber_match": true
+    }
+  ],
+  "image_candidates": [],
+  "identity_candidates": [],
+  "technical_candidates": [],
+  "notes": "Deltron explicitly lists exact Part Number 08201-05582000 as S5408QA_IO_FPC_R2.0, but no direct verifiable image URL for the exact spare part was available."
+}

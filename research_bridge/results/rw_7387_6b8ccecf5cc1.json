@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "request_id": "rw_7387_6b8ccecf5cc1",
+  "partnumber": "04072-06050300",
+  "work_type": "RESEARCH_IMAGES",
+  "researched_at": "2026-09-12T15:45:03+00:00",
+  "status": "NO_VERIFIED_EVIDENCE",
+  "sources": [
+    {
+      "page_url": "https://www.deltron.com.pe/modulos/productos/items/postsql.php?mproduct=todo&pmarca=M000037",
+      "source_domain": "deltron.com.pe",
+      "source_type": "DISTRIBUTOR",
+      "title": "ASUS 04072-06050300 S5408QA SPEAKER SET",
+      "exact_partnumber_match": true
+    }
+  ],
+  "image_candidates": [],
+  "identity_candidates": [],
+  "technical_candidates": [],
+  "notes": "Deltron explicitly lists exact Part Number 04072-06050300 as S5408QA SPEAKER SET, but a direct verifiable image URL for that exact spare part was not available from the source page."
+}
