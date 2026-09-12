@@ -102,3 +102,27 @@ def test_inspector_reads_inline_list_validation_and_formula_cells(tmp_path):
 
     assert schema.fields[2].allowed_values == ("Android", "iOS")
     assert schema.formula_cells == ("Carga Smartphone!B2",)
+
+
+def test_inspector_reads_list_validation_from_auxiliary_sheet_range(tmp_path):
+    source = tmp_path / "falabella-options.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Productos"
+    ws.append(["Sku vendedor * #1", "TipoDePortatil * #396393"])
+    ws.append([None, None])
+
+    options = wb.create_sheet("Opciones")
+    options.append(["TipoDePortatil"])
+    for value in ("2 en 1", "Macbook", "Laptop", "Laptop Gamer"):
+        options.append([value])
+
+    validation = DataValidation(type="list", formula1="'Opciones'!$A$2:$A$5")
+    ws.add_data_validation(validation)
+    validation.add("B2:B100")
+    wb.save(source)
+
+    schema = TemplateInspector().inspect(source)
+    field = next(item for item in schema.fields if item.attribute_id == "396393")
+
+    assert field.allowed_values == ("2 en 1", "Macbook", "Laptop", "Laptop Gamer")
