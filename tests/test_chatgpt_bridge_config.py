@@ -40,6 +40,25 @@ def test_bridge_config_loads_from_typed_settings_without_api_keys(tmp_path):
     assert not hasattr(config, "brave_api_key")
 
 
+def test_bridge_config_uses_sibling_bridge_worktree_when_default_dot_path_is_used(tmp_path, monkeypatch):
+    module = bridge_config_module()
+    main_repo = tmp_path / "mcp-stech"
+    bridge_repo = tmp_path / "mcp-stech-bridge"
+    main_repo.mkdir()
+    bridge_repo.mkdir()
+    monkeypatch.chdir(main_repo)
+    settings = Settings(
+        _env_file=None,
+        stech_chatgpt_bridge_enabled=True,
+        stech_research_git_repo=".",
+        stech_research_git_branch="feat/chatgpt-research-bridge-v1",
+    )
+
+    config = module.BridgeConfig.from_settings(settings)
+
+    assert config.repo_path == bridge_repo.resolve()
+
+
 @pytest.mark.parametrize(
     "field,value",
     [
