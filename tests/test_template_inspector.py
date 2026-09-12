@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from openpyxl import Workbook
+from openpyxl.worksheet.datavalidation import DataValidation
 
 from stech_mcp.excel.template_inspector import TemplateInspector
 
@@ -82,3 +83,22 @@ def test_inspector_supports_generic_template_without_attribute_ids(tmp_path):
     assert schema.fields[0].required is True
     assert schema.fields[0].attribute_id is None
     assert schema.fields[2].header == "RAM (GB)"
+
+
+def test_inspector_reads_inline_list_validation_and_formula_cells(tmp_path):
+    source = tmp_path / "smartphone-options.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Carga Smartphone"
+    ws.append(["Part Number *", "Marca *", "Sistema Operativo"])
+    ws.append([None, None, None])
+    ws["B2"] = "=UPPER(A2)"
+    validation = DataValidation(type="list", formula1='"Android,iOS"')
+    ws.add_data_validation(validation)
+    validation.add("C2:C100")
+    wb.save(source)
+
+    schema = TemplateInspector().inspect(source)
+
+    assert schema.fields[2].allowed_values == ("Android", "iOS")
+    assert schema.formula_cells == ("Carga Smartphone!B2",)
