@@ -42,6 +42,7 @@ def test_required_missing_field_and_images_make_incomplete():
         image_readiness_service=Images(),
     ).get("PN1", "FALABELLA", "LAPTOP")
     assert result["state"] == "INCOMPLETE"
+    assert result["channel_export_status"] == "BLOCKED_REQUIRED_FIELD"
     by_field = {row["target_field_code"]: row for row in result["fields"]}
     assert by_field["cpu_model"]["state"] == "COMPLETE"
     assert by_field["cpu_model"]["status"] == "COMPLETE"
@@ -77,3 +78,64 @@ def test_required_conflict_blocks_even_if_other_fields_complete():
         image_readiness_service=Images(),
     ).get("PN1", "FALABELLA", "LAPTOP")
     assert result["state"] == "BLOCKED_CONFLICT"
+    assert result["channel_export_status"] == "REVIEW_REQUIRED"
+
+
+def test_package_input_blocks_logistics_not_product_data():
+    class Requirements:
+        def get(self, *args, **kwargs):
+            return {
+                "version_code": "V2",
+                "fields": [
+                    {"target_field_code": "package_weight_g", "master_field_code": None, "requirement": "REQUIRED", "data_scope": "CONTROL"}
+                ],
+            }
+
+    class Technical:
+        def get(self, pn):
+            return {"known_fields": {}, "conflicts": [], "completion_pct": 100}
+
+    class Images:
+        def get(self, *args, **kwargs):
+            return {"state": "READY", "image_count": 4, "required_min": 1, "missing_reasons": []}
+
+    result = ChannelGapAnalyzer(
+        requirement_repository=Requirements(),
+        technical_status_service=Technical(),
+        image_readiness_service=Images(),
+    ).get("PN1", "FALABELLA", "LAPTOP")
+
+    assert result["state"] == "INCOMPLETE"
+    assert result["channel_export_status"] == "BLOCKED_LOGISTICS"
+
+
+def test_missing_identity_has_specific_channel_blocker():
+    class Requirements:
+        def get(self, *args, **kwargs):
+            return {
+                "version_code": "V2",
+                "fields": [
+                    {"target_field_code": "barcode", "master_field_code": "ean", "requirement": "REQUIRED", "data_scope": "IDENTITY"}
+                ],
+            }
+
+    class Technical:
+        def get(self, pn):
+            return {"known_fields": {}, "conflicts": [], "completion_pct": 100}
+
+    class Images:
+        def get(self, *args, **kwargs):
+            return {"state": "READY", "image_count": 4, "required_min": 1, "missing_reasons": []}
+
+    class Products:
+        def get_by_partnumber(self, pn):
+            return {"part_number": pn, "ean": None, "upc": None}
+
+    result = ChannelGapAnalyzer(
+        requirement_repository=Requirements(),
+        technical_status_service=Technical(),
+        image_readiness_service=Images(),
+        product_repository=Products(),
+    ).get("PN1", "FALABELLA", "LAPTOP")
+
+    assert result["channel_export_status"] == "BLOCKED_IDENTITY"
