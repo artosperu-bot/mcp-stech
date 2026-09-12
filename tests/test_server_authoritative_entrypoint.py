@@ -12,3 +12,9 @@ def test_authoritative_runtime_starts_enabled_chatgpt_bridge():
     assert "start_bridge_thread" in text
     assert "_start_chatgpt_bridge_if_enabled" in text
     assert "_start_chatgpt_bridge_if_enabled()" in text
+
+
+def test_bridge_startup_errors_go_to_stderr_not_mcp_stdout():
+    text = Path("src/stech_mcp/server_authoritative.py").read_text(encoding="utf-8")
+    assert "import sys" in text
+    assert "file=sys.stderr" in text
