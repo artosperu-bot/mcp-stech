@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 from stech_mcp.chatgpt_bridge.contracts import ResearchRequestV1
 from stech_mcp.chatgpt_bridge.mailbox import Mailbox
-from stech_mcp.chatgpt_bridge.runner import BridgeRunner
+from stech_mcp.chatgpt_bridge.runner import BridgeRunner, start_bridge_thread
 
 
 class Transport:
@@ -35,6 +35,30 @@ class Importer:
     def import_result(self, request, result):
         self.calls.append((request, result))
         return {"status": "REVIEW_REQUIRED", "imported": 1}
+
+
+class FakeConfig:
+    def __init__(self, enabled):
+        self.enabled = enabled
+
+
+class FakeThread:
+    created = []
+
+    def __init__(self, *, target, name, daemon):
+        self.target = target
+        self.name = name
+        self.daemon = daemon
+        self.started = False
+        self.__class__.created.append(self)
+
+    def start(self):
+        self.started = True
+
+
+class FakeRunner:
+    def run_forever(self):
+        raise AssertionError("test thread factory must not execute target")
 
 
 def request_payload():
@@ -121,3 +145,25 @@ def test_run_once_does_not_create_receipt_when_import_fails(tmp_path):
 
     receipt = tmp_path / "research_bridge" / "receipts" / f"{request.request_id}.json"
     assert not receipt.exists()
+
+
+def test_start_bridge_thread_runs_bridge_inside_stech_mcp_when_enabled():
+    FakeThread.created = []
+    runner = FakeRunner()
+
+    thread = start_bridge_thread(FakeConfig(True), runner, thread_factory=FakeThread)
+
+    assert thread is FakeThread.created[0]
+    assert thread.started is True
+    assert thread.daemon is True
+    assert thread.name == "stech-chatgpt-bridge"
+    assert thread.target == runner.run_forever
+
+
+def test_start_bridge_thread_is_noop_when_disabled():
+    FakeThread.created = []
+
+    thread = start_bridge_thread(FakeConfig(False), FakeRunner(), thread_factory=FakeThread)
+
+    assert thread is None
+    assert FakeThread.created == []
