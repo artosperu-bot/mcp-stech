@@ -31,6 +31,21 @@ def _public_package(package: dict[str, Any] | None) -> dict[str, Any] | None:
     return result
 
 
+def _approved_identity(rows: list[dict[str, Any]], field_code: str, fallback: Any = None) -> Any:
+    target = str(field_code or "").strip().lower()
+    for row in rows or []:
+        if str(row.get("field_code") or "").strip().lower() != target:
+            continue
+        if row.get("value_text") not in (None, ""):
+            return str(row.get("value_text")).strip()
+        if row.get("value_number") is not None:
+            value = row.get("value_number")
+            if isinstance(value, Decimal) and value == value.to_integral_value():
+                return format(value, "f").split(".")[0]
+            return str(value)
+    return fallback
+
+
 class ProductPrepareService:
     def __init__(
         self,
@@ -99,8 +114,8 @@ class ProductPrepareService:
             "brand": product.get("marca"),
             "model": specs.get("MODELO"),
             "product_name": product.get("nombre"),
-            "ean": product.get("ean"),
-            "upc": product.get("upc"),
+            "ean": _approved_identity(approved_enrichments, "ean", product.get("ean")),
+            "upc": _approved_identity(approved_enrichments, "upc", product.get("upc")),
             "mini_codigo": product.get("mini_codigo") or product.get("minicodigo"),
             "category_code": str(category or "LAPTOP").strip().upper(),
             "subcategory_code": product.get("subcategoria") or product.get("subcategory"),

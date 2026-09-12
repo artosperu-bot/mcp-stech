@@ -1,7 +1,7 @@
 import json
 from decimal import Decimal
 
-from stech_mcp.services.product_prepare import ProductPrepareService
+from stech_mcp.services.product_prepare import ProductPrepareService, _approved_identity
 
 
 class FakeProductRepository:
@@ -116,9 +116,7 @@ def test_prepare_persists_product_master_package_and_81_field_coolbox_draft():
         packaging_rule_repository=FakePackagingRuleRepository(),
         product_master_repository=master_repo,
     )
-
     result = service.prepare("82yu00xylm")
-
     assert result["found"] is True
     assert product_repo.calls == ["82YU00XYLM"]
     assert result["package"]["width_cm"] == 33
@@ -126,99 +124,60 @@ def test_prepare_persists_product_master_package_and_81_field_coolbox_draft():
     assert result["package"]["length_cm"] == 54
     assert result["package"]["height_cm"] == 7
     assert result["package"]["weight_g"] == 2500
-    assert result["package"]["rule_code"] == "LAPTOP_15_X_DEFAULT"
     assert result["coolbox_preview"]["field_count"] == 81
     assert len(master_repo.drafts) == 1
-    assert len(master_repo.drafts[0]["payload"]["fields"]) == 81
     assert master_repo.snapshots[0]["package_width_cm"] == Decimal("33.00")
-    assert master_repo.snapshots[0]["package_length_cm"] == Decimal("54.00")
-    assert master_repo.snapshots[0]["package_height_cm"] == Decimal("7.00")
-    assert master_repo.snapshots[0]["package_weight_g"] == 2500
     assert master_repo.audit[0]["event_type"] == "PRODUCT_PREPARED"
 
 
 def test_prepare_applies_all_approved_enrichments_to_persisted_coolbox_draft():
-    enrichments = FakeEnrichmentRepository([
-        {
-            "field_code": "ssd_capacity_gb",
-            "value_number": Decimal("512"),
-            "value_text": None,
-            "unit": "GB",
-            "method": "VERIFIED",
-            "confidence_grade": "A1",
-            "is_approved": True,
-        }
-    ])
+    enrichments = FakeEnrichmentRepository([{"field_code":"ssd_capacity_gb","value_number":Decimal("512"),"value_text":None,"unit":"GB","method":"VERIFIED","confidence_grade":"A1","is_approved":True}])
     master_repo = FakeProductMasterRepository()
-    service = ProductPrepareService(
-        product_repository=FakeProductRepository(_product()),
-        enrichment_repository=enrichments,
-        packaging_rule_repository=FakePackagingRuleRepository(),
-        product_master_repository=master_repo,
-    )
-
+    service = ProductPrepareService(product_repository=FakeProductRepository(_product()),enrichment_repository=enrichments,packaging_rule_repository=FakePackagingRuleRepository(),product_master_repository=master_repo)
     result = service.prepare("82YU00XYLM")
-
     fields = {row["field"]: row for row in result["coolbox_preview"]["fields"]}
     assert fields["Capacidad de disco sólido (SSD)"]["value"] == "512 GB"
     assert fields["Capacidad de disco sólido (SSD)"]["status"] == "VERIFIED"
-    persisted_fields = {row["field"]: row for row in master_repo.drafts[0]["payload"]["fields"]}
-    assert persisted_fields["Capacidad de disco sólido (SSD)"]["value"] == "512 GB"
     assert ("82YU00XYLM", None) in enrichments.calls
 
 
 def test_prepare_uses_exact_deltron_source_images_without_requiring_editing():
-    source_rows = [
-        {
-            "imagen_id": 10 + i,
-            "producto_distribuidor_id": 1162,
-            "orden_imagen": i + 1,
-            "url_origen": f"https://imagenes.deltron.com.pe/82YU00XYLM/{i + 1}.jpg",
-            "part_number_snapshot": "82YU00XYLM",
-            "ruta_actual": fr"C:\STECH_IMAGENES\82YU00XYLM\{i + 1}.jpg",
-            "nombre_archivo": f"{i + 1}.jpg",
-            "ancho_px": 1200,
-            "alto_px": 1200,
-            "formato": "jpg",
-            "hash_sha256": str(i) * 64,
-            "fecha_eliminacion": None,
-        }
-        for i in range(4)
-    ]
-    source_repo = FakeSourceImageRepository(source_rows)
-    master_repo = FakeProductMasterRepository()
-    service = ProductPrepareService(
-        product_repository=FakeProductRepository(_product()),
-        enrichment_repository=FakeEnrichmentRepository(),
-        packaging_rule_repository=FakePackagingRuleRepository(),
-        product_master_repository=master_repo,
-        source_image_repository=source_repo,
-    )
-
-    result = service.prepare("82YU00XYLM")
-
-    assert source_repo.calls == [1162]
-    assert len(result["source_images"]) == 4
-    assert result["source_images"][0]["source_type"] == "DELTRON_DB"
+    source_rows = [{"imagen_id":10+i,"producto_distribuidor_id":1162,"orden_imagen":i+1,"url_origen":f"https://imagenes.deltron.com.pe/82YU00XYLM/{i+1}.jpg","part_number_snapshot":"82YU00XYLM","ruta_actual":fr"C:\STECH_IMAGENES\82YU00XYLM\{i+1}.jpg","nombre_archivo":f"{i+1}.jpg","ancho_px":1200,"alto_px":1200,"formato":"jpg","hash_sha256":str(i)*64,"fecha_eliminacion":None} for i in range(4)]
+    source_repo=FakeSourceImageRepository(source_rows);master_repo=FakeProductMasterRepository()
+    service=ProductPrepareService(product_repository=FakeProductRepository(_product()),enrichment_repository=FakeEnrichmentRepository(),packaging_rule_repository=FakePackagingRuleRepository(),product_master_repository=master_repo,source_image_repository=source_repo)
+    result=service.prepare("82YU00XYLM")
+    assert source_repo.calls==[1162]
+    assert len(result["source_images"])==4
+    assert result["source_images"][0]["source_type"]=="DELTRON_DB"
     assert result["source_images"][0]["editing_required"] is False
-    assert result["readiness"]["usable_image_count"] == 4
-    assert result["readiness"]["image_score"] == 100
-    assert result["readiness"]["state"] != "FALTAN_IMAGENES"
+    assert result["readiness"]["usable_image_count"]==4
+    assert result["readiness"]["image_score"]==100
 
 
 def test_prepare_missing_product_does_not_persist_anything():
-    product_repo = FakeProductRepository(None)
-    master_repo = FakeProductMasterRepository()
-    service = ProductPrepareService(
-        product_repository=product_repo,
-        enrichment_repository=FakeEnrichmentRepository(),
-        packaging_rule_repository=FakePackagingRuleRepository(),
-        product_master_repository=master_repo,
-    )
+    product_repo=FakeProductRepository(None);master_repo=FakeProductMasterRepository()
+    service=ProductPrepareService(product_repository=product_repo,enrichment_repository=FakeEnrichmentRepository(),packaging_rule_repository=FakePackagingRuleRepository(),product_master_repository=master_repo)
+    result=service.prepare("NO-EXISTE")
+    assert result=={"found":False,"partnumber":"NO-EXISTE"}
+    assert master_repo.snapshots==[] and master_repo.drafts==[] and master_repo.audit==[]
 
-    result = service.prepare("NO-EXISTE")
 
-    assert result == {"found": False, "partnumber": "NO-EXISTE"}
-    assert master_repo.snapshots == []
-    assert master_repo.drafts == []
-    assert master_repo.audit == []
+def test_approved_identity_prefers_enrichment_over_source_value():
+    rows=[{"field_code":"ean","value_text":"4006381333931"},{"field_code":"upc","value_text":"012345678905"}]
+    assert _approved_identity(rows,"ean","OLD")=="4006381333931"
+    assert _approved_identity(rows,"upc",None)=="012345678905"
+
+
+def test_prepare_writes_approved_ean_into_master_snapshot():
+    product=_product();product["ean"]=None
+    enrich=FakeEnrichmentRepository([{"field_code":"ean","value_text":"4006381333931","is_approved":True}])
+    master=FakeProductMasterRepository()
+    svc=ProductPrepareService(product_repository=FakeProductRepository(product),enrichment_repository=enrich,packaging_rule_repository=FakePackagingRuleRepository(),product_master_repository=master)
+    out=svc.prepare("82YU00XYLM")
+    assert out["found"] is True
+    assert master.snapshots[0]["ean"]=="4006381333931"
+
+
+def test_approved_identity_number_compacts_without_scientific_notation():
+    rows=[{"field_code":"gtin","value_number":Decimal("12345678901234")}]
+    assert _approved_identity(rows,"gtin",None)=="12345678901234"

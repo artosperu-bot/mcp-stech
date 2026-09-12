@@ -16,6 +16,12 @@ _TECHNICAL_INPUT_KEYS = {
     "scope",
     "source_context",
 }
+_IDENTITY_INPUT_KEYS = {
+    "partnumber",
+    "requested_fields",
+    "scope",
+    "source_context",
+}
 _CONTEXT_KEYS = (
     "scope",
     "requirements_version",
@@ -62,40 +68,52 @@ class ProductWorkService:
                 for key in _CONTEXT_KEYS
                 if row.get(key) not in (None, "", [])
             }
+            context_category = None if normalized_work_type == "RESEARCH_IDENTITY" else category
+            context_channel = None if normalized_work_type == "RESEARCH_IDENTITY" else channel
             context_hash = make_context_hash(
                 normalized_work_type,
                 pn,
-                category,
-                channel,
+                context_category,
+                context_channel,
                 context=extra_context or None,
             )
 
-            # Preserve legacy product-level technical deduplication when callers
-            # do not provide an explicit scope/target. New MASTER/CHANNEL jobs use
-            # their intent hash so two different gaps for one PN can coexist.
+            # Identity work is canonical per selected PN, independent of channel,
+            # category or duplicate UI rows. Technical work keeps its historical
+            # product-level behavior unless an explicit scoped context is present.
             contextual = bool(extra_context or channel)
-            dedupe_key = (
-                pn
-                if normalized_work_type == "ENRICH_TECHNICAL" and not contextual
-                else context_hash
-            )
+            if normalized_work_type == "RESEARCH_IDENTITY":
+                dedupe_key = pn
+            elif normalized_work_type == "ENRICH_TECHNICAL" and not contextual:
+                dedupe_key = pn
+            else:
+                dedupe_key = context_hash
             if dedupe_key in seen:
                 continue
             seen.add(dedupe_key)
 
             if normalized_work_type == "ENRICH_TECHNICAL":
                 item = {key: row[key] for key in _TECHNICAL_INPUT_KEYS if key in row}
+            elif normalized_work_type == "RESEARCH_IDENTITY":
+                # Identity work is deliberately isolated from commercial data.
+                # Persist only exact PN plus identity research context so callers
+                # cannot attach price/stock/publication mutations to this job.
+                item = {key: row[key] for key in _IDENTITY_INPUT_KEYS if key in row}
             else:
                 item = dict(row)
             item["partnumber"] = pn
-            if category:
-                item["category_code"] = category
-            elif "category_code" in item:
+            if normalized_work_type == "RESEARCH_IDENTITY":
                 item.pop("category_code", None)
-            if channel:
-                item["channel_code"] = channel
-            elif "channel_code" in item:
                 item.pop("channel_code", None)
+            else:
+                if category:
+                    item["category_code"] = category
+                elif "category_code" in item:
+                    item.pop("category_code", None)
+                if channel:
+                    item["channel_code"] = channel
+                elif "channel_code" in item:
+                    item.pop("channel_code", None)
             item["context_hash"] = context_hash
             items.append(item)
 

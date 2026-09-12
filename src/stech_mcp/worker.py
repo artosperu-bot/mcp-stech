@@ -61,10 +61,6 @@ def worker_enabled() -> bool:
     return os.getenv("STECH_WORKER_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _search_language() -> str:
-    return os.getenv("STECH_SEARCH_LANGUAGE", os.getenv("STECH_SEARCH_LANG", "es"))
-
-
 class ProductWorkWorker:
     def __init__(
         self,
@@ -320,9 +316,9 @@ def build_worker_from_environment(worker_suffix: str | None = None) -> ProductWo
         candidate_repository=candidate_repository,
     )
     search_provider = BraveSearchProvider(
-        api_key=os.getenv("STECH_BRAVE_SEARCH_API_KEY", ""),
-        country=os.getenv("STECH_SEARCH_COUNTRY", "PE"),
-        search_lang=_search_language(),
+        api_key=settings.stech_brave_search_api_key,
+        country=settings.stech_search_country,
+        search_lang=settings.stech_search_language,
     )
     source_document_service = SourceDocumentService(
         document_repository=source_document_repository,
@@ -348,9 +344,9 @@ def build_worker_from_environment(worker_suffix: str | None = None) -> ProductWo
         policy_repository=image_candidate_repository,
     )
     image_search_provider = BraveImageSearchProvider(
-        api_key=os.getenv("STECH_BRAVE_SEARCH_API_KEY", ""),
-        country=os.getenv("STECH_SEARCH_COUNTRY", "PE"),
-        search_lang=_search_language(),
+        api_key=settings.stech_brave_search_api_key,
+        country=settings.stech_search_country,
+        search_lang=settings.stech_search_language,
     )
     image_research_service = ProductImageResearchService(
         product_repository=product_repository,

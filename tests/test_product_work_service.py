@@ -55,6 +55,41 @@ def test_create_enrichment_job_dedupes_and_strips_commercial_fields():
     assert "promotion_start" not in item
 
 
+def test_create_identity_job_keeps_only_selected_unique_batch_and_safe_identity_context():
+    repo = FakeRepository()
+    service = ProductWorkService(repo)
+
+    result = service.create_job(
+        rows=[
+            {
+                "partnumber": " pn1 ",
+                "requested_fields": ["ean", "upc", "gtin"],
+                "price": 99,
+                "stock": 8,
+                "cost": 70,
+                "promotion_start": "2026-09-01",
+                "category_code": "LAPTOP",
+            },
+            {"partnumber": "PN1", "stock": 2},
+            {"partnumber": "pn2", "requested_fields": ["ean", "upc", "gtin"], "publish": True},
+        ],
+        work_type="RESEARCH_IDENTITY",
+        source_name="V8_SELECTED_IDENTITY",
+        actor_source="SCR_UI",
+        priority=70,
+    )
+
+    assert result["total_items"] == 2
+    assert repo.created["work_type"] == "RESEARCH_IDENTITY"
+    assert [item["partnumber"] for item in repo.created["items"]] == ["PN1", "PN2"]
+    assert repo.created["items"] == [
+        {"partnumber": "PN1", "requested_fields": ["ean", "upc", "gtin"], "context_hash": repo.created["items"][0]["context_hash"]},
+        {"partnumber": "PN2", "requested_fields": ["ean", "upc", "gtin"], "context_hash": repo.created["items"][1]["context_hash"]},
+    ]
+    forbidden = {"price", "stock", "cost", "promotion_start", "publish", "category_code", "channel_code"}
+    assert all(not (forbidden & set(item)) for item in repo.created["items"])
+
+
 def test_service_rejects_invalid_max_attempts():
     with pytest.raises(ValueError, match="max_attempts"):
         ProductWorkService(FakeRepository(), max_attempts=0)

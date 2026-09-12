@@ -68,6 +68,15 @@ class Settings(BaseSettings):
     mcp_public_host: str = "mcp.artos.pe"
     erp_product_view: str = "dbo.V_PRD_PRODUCTO_ACTUAL"
 
+    # Public research configuration. These fields must be part of Settings so
+    # values stored only in .env are available to both MCP and worker processes.
+    stech_brave_search_api_key: str = ""
+    stech_search_country: str = "PE"
+    stech_search_language: str = Field(
+        "es",
+        validation_alias=AliasChoices("STECH_SEARCH_LANGUAGE", "STECH_SEARCH_LANG"),
+    )
+
     # VTEX image sync. The existing V8 channel credential names are accepted as
     # aliases so PC020 can reuse the same API credential pair without renaming it.
     stech_image_root: str = r"C:\STECH_IMAGENES"
