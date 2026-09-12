@@ -1,0 +1,21 @@
+{
+  "brand": "LOGITECH",
+  "category_code": null,
+  "created_at": "2026-09-12T14:51:56.239000",
+  "model": null,
+  "partnumber": "981-000014",
+  "product_work_item_id": 7486,
+  "product_work_job_id": 181,
+  "request_id": "rw_7486_011c815b69ab",
+  "requested_fields": [
+    "images"
+  ],
+  "research_policy": {
+    "exact_partnumber_required": true,
+    "max_candidates": 10,
+    "max_sources": 5,
+    "prefer_official_sources": true
+  },
+  "schema_version": 1,
+  "work_type": "RESEARCH_IMAGES"
+}
