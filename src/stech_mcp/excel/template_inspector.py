@@ -31,6 +31,25 @@ def _first_column_values(workbook, sheet_names: tuple[str, ...]) -> tuple[str, .
     return ()
 
 
+def _inline_validation_values(worksheet, column: int, data_row: int) -> tuple[str, ...]:
+    validations = getattr(getattr(worksheet, "data_validations", None), "dataValidation", []) or []
+    for validation in validations:
+        if str(getattr(validation, "type", "") or "").strip().lower() != "list":
+            continue
+        ranges = getattr(getattr(validation, "sqref", None), "ranges", []) or []
+        applies = any(
+            cell_range.min_col <= column <= cell_range.max_col
+            and cell_range.min_row <= data_row <= cell_range.max_row
+            for cell_range in ranges
+        )
+        if not applies:
+            continue
+        formula = str(getattr(validation, "formula1", "") or "").strip()
+        if len(formula) >= 2 and formula.startswith('"') and formula.endswith('"'):
+            return _clean_values(value.strip() for value in formula[1:-1].split(","))
+    return ()
+
+
 class TemplateInspector:
     """Inspect marketplace Excel templates without mutating their content."""
 
@@ -75,6 +94,11 @@ class TemplateInspector:
                         column_letter=get_column_letter(column),
                         attribute_id=match.group(1) if match else None,
                         required="*" in header,
+                        allowed_values=_inline_validation_values(
+                            worksheet,
+                            column,
+                            header_row + 1,
+                        ),
                     )
                 )
 
