@@ -102,7 +102,7 @@ def test_bridge_accepts_requested_fields_as_whitelist_when_category_schema_is_un
 
     assert out["status"] == "REVIEW_REQUIRED"
     assert out["imported"] == 1
-    assert facts.rows[0]["field_code"] == "memoria_grafica"
+    assert facts.rows[0]["field_code"] == "memoria_gráfica"
 
 
 def test_bridge_rejects_unsolicited_field_when_only_requested_fields_define_scope():
