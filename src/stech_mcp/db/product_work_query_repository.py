@@ -1,11 +1,27 @@
 from __future__ import annotations
 
+import json
 from typing import Any, Callable
 
 
 class ProductWorkQueryRepository:
     def __init__(self, connection_factory: Callable[[], Any]):
         self.connection_factory = connection_factory
+
+    @staticmethod
+    def _decode_input(row: dict[str, Any]) -> dict[str, Any]:
+        output = dict(row)
+        raw = output.get("input_json")
+        if isinstance(raw, str):
+            try:
+                output["input"] = json.loads(raw)
+            except json.JSONDecodeError:
+                output["input"] = {}
+        elif isinstance(raw, dict):
+            output["input"] = raw
+        else:
+            output["input"] = {}
+        return output
 
     def list_for_product(self, partnumber: str, *, limit: int = 20) -> list[dict[str, Any]]:
         pn = str(partnumber or "").strip().upper()
@@ -45,6 +61,39 @@ class ProductWorkQueryRepository:
             )
             columns = [item[0] for item in (cursor.description or [])]
             return [dict(zip(columns, row)) for row in cursor.fetchall()]
+        finally:
+            close = getattr(connection, "close", None)
+            if callable(close):
+                close()
+
+    def list_waiting_external(self, *, limit: int = 10) -> list[dict[str, Any]]:
+        bounded = max(1, min(int(limit), 100))
+        connection = self.connection_factory()
+        try:
+            cursor = connection.cursor()
+            cursor.execute(
+                f"""
+                SELECT TOP ({bounded})
+                    i.product_work_item_id AS item_id,
+                    i.product_work_job_id AS job_id,
+                    i.work_type,
+                    i.partnumber,
+                    i.category_code,
+                    i.channel_code,
+                    i.context_hash,
+                    i.input_json,
+                    i.status,
+                    i.created_at
+                FROM dbo.product_work_item i
+                WHERE i.status = N'WAITING_EXTERNAL_RESEARCH'
+                ORDER BY i.priority DESC, i.product_work_item_id
+                """
+            )
+            columns = [item[0] for item in (cursor.description or [])]
+            return [
+                self._decode_input(dict(zip(columns, row)))
+                for row in cursor.fetchall()
+            ]
         finally:
             close = getattr(connection, "close", None)
             if callable(close):

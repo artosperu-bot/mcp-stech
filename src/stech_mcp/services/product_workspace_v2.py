@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from stech_mcp.services.product_data_readiness import ProductDataReadinessService
+
 
 class ProductWorkspaceV2Service:
     """Channel-neutral Product Workspace read model composed from authoritative services."""
@@ -15,6 +17,7 @@ class ProductWorkspaceV2Service:
         image_candidate_repository: Any,
         fact_candidate_repository: Any,
         work_repository: Any,
+        product_data_readiness_service: Any | None = None,
     ) -> None:
         self.product_repository = product_repository
         self.technical_status_service = technical_status_service
@@ -22,6 +25,7 @@ class ProductWorkspaceV2Service:
         self.image_candidate_repository = image_candidate_repository
         self.fact_candidate_repository = fact_candidate_repository
         self.work_repository = work_repository
+        self.product_data_readiness_service = product_data_readiness_service or ProductDataReadinessService()
 
     @staticmethod
     def _fallback_category(product: dict[str, Any]) -> str | None:
@@ -82,11 +86,16 @@ class ProductWorkspaceV2Service:
             "category_code": category,
             "distributor": product.get("distribuidor") or product.get("distributor"),
         }
+        product_data_readiness = self.product_data_readiness_service.evaluate(
+            product=master,
+            technical=technical,
+        )
         return {
             "found": True,
             "partnumber": pn,
             "master": master,
             "technical": technical,
+            "product_data_readiness": product_data_readiness,
             "images": {
                 "readiness": image_readiness,
                 "candidate_count": len(image_candidates),

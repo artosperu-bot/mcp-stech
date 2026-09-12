@@ -50,6 +50,8 @@ _TERMINAL_RESULTS = {
     "FAILED",
     "CANCELLED",
 }
+_HANDOFF_RESULTS = {"WAITING_EXTERNAL_RESEARCH"}
+_ALLOWED_RESULTS = _TERMINAL_RESULTS | _HANDOFF_RESULTS
 
 
 def retry_delay_seconds(failed_attempt_count: int) -> int:
@@ -182,7 +184,7 @@ class ProductWorkWorker:
 
             result = self.dispatcher.dispatch(item, progress)
             target = str(result.get("status") or "").strip().upper()
-            if target not in _TERMINAL_RESULTS:
+            if target not in _ALLOWED_RESULTS:
                 raise PermanentWorkError("INVALID_HANDLER_STATUS", f"unsupported handler status: {target}")
 
             error_code = result.get("error_code")
@@ -202,7 +204,8 @@ class ProductWorkWorker:
                 error_code=str(error_code) if error_code else None,
                 error_detail=str(error_detail) if error_detail else None,
             )
-            self._record_event(item, "FINISHED", status=target, detail={"result": target})
+            event_type = "HANDOFF" if target in _HANDOFF_RESULTS else "FINISHED"
+            self._record_event(item, event_type, status=target, detail={"result": target})
             self._refresh_summary(item)
             return True
 
@@ -335,7 +338,10 @@ def build_worker_from_environment(worker_suffix: str | None = None) -> ProductWo
         fact_extractor=FactExtractor(),
         audit_repository=audit_repository,
     )
-    enrichment_handler = EnrichTechnicalHandler(enrichment_engine)
+    enrichment_handler = EnrichTechnicalHandler(
+        enrichment_engine,
+        external_research_enabled=settings.stech_chatgpt_bridge_enabled,
+    )
 
     image_readiness_service = ProductImageReadinessService(
         product_repository=product_repository,
@@ -355,7 +361,10 @@ def build_worker_from_environment(worker_suffix: str | None = None) -> ProductWo
         candidate_repository=image_candidate_repository,
         search_provider=image_search_provider,
     )
-    image_handler = ResearchImagesHandler(image_research_service)
+    image_handler = ResearchImagesHandler(
+        image_research_service,
+        external_research_enabled=settings.stech_chatgpt_bridge_enabled,
+    )
 
     dispatcher = ProductWorkDispatcher()
     dispatcher.register("ENRICH_TECHNICAL", enrichment_handler)

@@ -1,4 +1,7 @@
+import pytest
+
 from stech_mcp.services.research.brave_image_search_provider import BraveImageSearchProvider
+from stech_mcp.services.research.search_provider import SearchProviderNotConfigured
 
 
 class Response:
@@ -31,10 +34,11 @@ class Client:
         return Response()
 
 
-def test_no_api_key_returns_empty_without_network():
+def test_no_api_key_raises_not_configured_without_network():
     client = Client()
     provider = BraveImageSearchProvider(api_key="", http_client=client)
-    assert provider.search("82YU00XYLM") == []
+    with pytest.raises(SearchProviderNotConfigured):
+        provider.search("82YU00XYLM")
     assert client.calls == []
 
 

@@ -41,6 +41,7 @@ def test_workspace_v2_groups_master_technical_images_evidence_and_jobs():
                 "known_fields": {"ram_gb": 16},
                 "missing_required": ["cpu_model"],
                 "missing_recommended": [],
+                "conflicts": [],
                 "completion_pct": 50,
             }
 
@@ -49,6 +50,7 @@ def test_workspace_v2_groups_master_technical_images_evidence_and_jobs():
     assert result["partnumber"] == "PN1"
     assert result["master"]["brand"] == "Lenovo"
     assert result["technical"]["completion_pct"] == 50
+    assert result["product_data_readiness"]["product_data_status"] == "INCOMPLETO"
     assert result["images"]["readiness"]["state"] == "NO_IMAGES"
     assert result["images"]["candidate_count"] == 1
     assert result["evidence"]["conflict_count"] == 1
@@ -64,5 +66,6 @@ def test_workspace_v2_keeps_images_available_when_category_schema_is_not_configu
 
     assert result["found"] is True
     assert result["technical"]["state"] == "NOT_CONFIGURED"
+    assert result["product_data_readiness"]["product_data_status"] == "INCOMPLETO"
     assert result["images"]["readiness"]["state"] == "NO_IMAGES"
     assert result["images"]["candidate_count"] == 1

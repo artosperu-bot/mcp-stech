@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "request_id": "rw_7486_011c815b69ab",
+  "partnumber": "981-000014",
+  "work_type": "RESEARCH_IMAGES",
+  "researched_at": "2026-09-12T14:56:46.054601+00:00",
+  "status": "EVIDENCE_FOUND",
+  "sources": [
+    {
+      "page_url": "https://www.logitech.com/en-gb/shop/p/h390-usb-headset.981-000014",
+      "source_domain": "logitech.com",
+      "source_type": "OFFICIAL",
+      "title": "Logitech H390 USB Computer Headset - 981-000014",
+      "exact_partnumber_match": true
+    },
+    {
+      "page_url": "https://www.logitech.com/content/dam/logitech/es_es/video-collaboration/pdf/headset-portfolio.pdf",
+      "source_domain": "logitech.com",
+      "source_type": "OFFICIAL",
+      "title": "Logitech headset portfolio - part numbers",
+      "exact_partnumber_match": true
+    }
+  ],
+  "image_candidates": [
+    {
+      "image_url": "https://resource.logitech.com/w_544%2Ch_466%2Car_7%3A6%2Cc_pad%2Cq_auto%2Cf_auto%2Cdpr_1.0/d_transparent.gif/content/dam/logitech/en/products/headsets/h390-usb-headset/gallery/h390-frontview-gallery-black.png",
+      "page_url": "https://www.logitech.com/en-gb/shop/p/h390-usb-headset.981-000014",
+      "title": "Logitech H390 front view black",
+      "width": 544,
+      "height": 466,
+      "exact_partnumber_match": true
+    },
+    {
+      "image_url": "https://resource.logitech.com/w_544%2Ch_466%2Car_7%3A6%2Cc_pad%2Cq_auto%2Cf_auto%2Cdpr_1.0/d_transparent.gif/content/dam/logitech/en/products/headsets/h390-usb-headset/gallery/h390-topview-usba-gallery-black.png",
+      "page_url": "https://www.logitech.com/en-gb/shop/p/h390-usb-headset.981-000014",
+      "title": "Logitech H390 USB-A top view black",
+      "width": 544,
+      "height": 466,
+      "exact_partnumber_match": true
+    },
+    {
+      "image_url": "https://resource.logitech.com/w_544%2Ch_466%2Car_7%3A6%2Cc_pad%2Cq_auto%2Cf_auto%2Cdpr_1.0/d_transparent.gif/content/dam/logitech/en/products/headsets/h390-usb-headset/gallery/h390-sideview-gallery-black.png",
+      "page_url": "https://www.logitech.com/en-gb/shop/p/h390-usb-headset.981-000014",
+      "title": "Logitech H390 side view black",
+      "width": 544,
+      "height": 466,
+      "exact_partnumber_match": true
+    },
+    {
+      "image_url": "https://resource.logitech.com/w_544%2Ch_466%2Car_7%3A6%2Cc_pad%2Cq_auto%2Cf_auto%2Cdpr_1.0/d_transparent.gif/content/dam/logitech/en/products/headsets/h390-usb-headset/gallery/h390-sideview-angle-gallery-black.png",
+      "page_url": "https://www.logitech.com/en-gb/shop/p/h390-usb-headset.981-000014",
+      "title": "Logitech H390 angled side view black",
+      "width": 544,
+      "height": 466,
+      "exact_partnumber_match": true
+    }
+  ],
+  "identity_candidates": [],
+  "technical_candidates": [],
+  "notes": "Official Logitech evidence confirms part number 981-000014 is the black H390 USB-A headset. Four official Logitech gallery images are returned for manual review/import."
+}

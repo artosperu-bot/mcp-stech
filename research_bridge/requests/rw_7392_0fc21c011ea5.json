@@ -1,0 +1,21 @@
+{
+  "brand": "ASUS",
+  "category_code": null,
+  "created_at": "2026-09-12T14:43:06.663000",
+  "model": null,
+  "partnumber": "08701-01032100",
+  "product_work_item_id": 7392,
+  "product_work_job_id": 176,
+  "request_id": "rw_7392_0fc21c011ea5",
+  "requested_fields": [
+    "images"
+  ],
+  "research_policy": {
+    "exact_partnumber_required": true,
+    "max_candidates": 10,
+    "max_sources": 5,
+    "prefer_official_sources": true
+  },
+  "schema_version": 1,
+  "work_type": "RESEARCH_IMAGES"
+}
