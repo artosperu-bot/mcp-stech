@@ -42,6 +42,7 @@ class BridgeRunner:
         self.max_import_per_cycle = max(int(max_import_per_cycle), 1)
         self.poll_seconds = max(int(poll_seconds), 1)
         self.sleep_fn = sleep_fn
+        self.last_error: str | None = None
 
     def _load_request(self, request_id: str) -> ResearchRequestV1:
         path = self.mailbox.requests_dir / f"{request_id}.json"
@@ -76,7 +77,15 @@ class BridgeRunner:
 
     def run_forever(self) -> None:
         while True:
-            self.run_once()
+            try:
+                self.run_once()
+                self.last_error = None
+            except StopIteration:
+                raise
+            except Exception as exc:
+                # Git/network/import failures must not kill the background daemon.
+                # A later cycle retries after poll_seconds.
+                self.last_error = f"{type(exc).__name__}: {exc}"
             self.sleep_fn(self.poll_seconds)
 
 

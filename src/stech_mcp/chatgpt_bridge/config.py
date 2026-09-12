@@ -17,11 +17,23 @@ class BridgeConfig(BaseModel):
     max_import_per_cycle: int = Field(ge=1, le=100)
     poll_seconds: int = Field(ge=1, le=3600)
 
+    @staticmethod
+    def _repo_path(value: str) -> Path:
+        configured = Path(str(value or ".").strip() or ".").expanduser()
+        if str(value or ".").strip() not in {"", ".", "./", ".\\"}:
+            return configured
+
+        current = Path.cwd().resolve()
+        if current.name.lower().endswith("-bridge"):
+            return current
+        sibling = current.parent / f"{current.name}-bridge"
+        return sibling.resolve() if sibling.exists() else current
+
     @classmethod
     def from_settings(cls, settings: Settings) -> "BridgeConfig":
         return cls(
             enabled=settings.stech_chatgpt_bridge_enabled,
-            repo_path=Path(settings.stech_research_git_repo).expanduser(),
+            repo_path=cls._repo_path(settings.stech_research_git_repo),
             branch=settings.stech_research_git_branch,
             max_export_per_cycle=settings.stech_research_max_export_per_cycle,
             max_import_per_cycle=settings.stech_research_max_import_per_cycle,

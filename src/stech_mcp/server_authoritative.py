@@ -9,10 +9,12 @@ legacy Product Loader or marketplace behavior.
 """
 
 import os
+import sys
 
 from stech_mcp import server as _server
 from stech_mcp.background import BackgroundRuntime
 from stech_mcp.background_config import BackgroundConfig
+from stech_mcp.chatgpt_bridge.runner import build_runner_from_environment, start_bridge_thread
 from stech_mcp.db.channel_requirement_repository import ChannelRequirementRepository
 from stech_mcp.db.fact_candidate_repository import FactCandidateRepository
 from stech_mcp.db.product_image_candidate_repository import ProductImageCandidateRepository
@@ -190,12 +192,31 @@ product_workspace_v2_tools = register_product_workspace_v2_tools(
 
 mcp = _server.mcp
 settings = _server.settings
+_chatgpt_bridge_thread = None
+_chatgpt_bridge_error: str | None = None
+
+
+def _start_chatgpt_bridge_if_enabled() -> None:
+    global _chatgpt_bridge_thread, _chatgpt_bridge_error
+    if _chatgpt_bridge_thread is not None or not settings.stech_chatgpt_bridge_enabled:
+        return
+    try:
+        bridge_config, bridge_runner = build_runner_from_environment()
+        _chatgpt_bridge_thread = start_bridge_thread(bridge_config, bridge_runner)
+        _chatgpt_bridge_error = None
+    except Exception as exc:
+        _chatgpt_bridge_error = f"{type(exc).__name__}: {exc}"
+        print(
+            f"STECH ChatGPT Research Bridge startup error: {_chatgpt_bridge_error}",
+            file=sys.stderr,
+        )
 
 
 def main() -> None:
     # Start only from the official executable entry point, never at import time.
     if background_config.background_enabled and background_config.scanner_enabled:
         background_runtime.start()
+    _start_chatgpt_bridge_if_enabled()
     _server.main()
 
 

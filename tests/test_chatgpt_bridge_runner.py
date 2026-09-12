@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
+
 from stech_mcp.chatgpt_bridge.contracts import ResearchRequestV1
 from stech_mcp.chatgpt_bridge.mailbox import Mailbox
 from stech_mcp.chatgpt_bridge.runner import BridgeRunner, start_bridge_thread
@@ -145,6 +147,36 @@ def test_run_once_does_not_create_receipt_when_import_fails(tmp_path):
 
     receipt = tmp_path / "research_bridge" / "receipts" / f"{request.request_id}.json"
     assert not receipt.exists()
+
+
+def test_run_forever_survives_one_transient_cycle_error(tmp_path):
+    sleeps = []
+    runner = BridgeRunner(
+        mailbox=Mailbox(tmp_path),
+        transport=Transport(),
+        exporter=Exporter(),
+        importer=Importer(),
+        max_export_per_cycle=10,
+        max_import_per_cycle=20,
+        poll_seconds=1,
+        sleep_fn=lambda seconds: sleeps.append(seconds),
+    )
+    calls = []
+
+    def flaky_cycle():
+        calls.append(len(calls) + 1)
+        if len(calls) == 1:
+            raise RuntimeError("temporary git failure")
+        raise StopIteration("stop test after retry")
+
+    runner.run_once = flaky_cycle
+
+    with pytest.raises(StopIteration, match="stop test"):
+        runner.run_forever()
+
+    assert calls == [1, 2]
+    assert sleeps == [1]
+    assert runner.last_error == "RuntimeError: temporary git failure"
 
 
 def test_start_bridge_thread_runs_bridge_inside_stech_mcp_when_enabled():
