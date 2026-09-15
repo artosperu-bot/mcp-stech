@@ -187,6 +187,7 @@ class ProductWorkWorker:
 
             error_code = result.get("error_code")
             error_detail = result.get("error_detail")
+            structured_result = result.get("result") if isinstance(result.get("result"), dict) else None
             final_progress = 100 if target == "COMPLETED" else None
             item = self.repository.transition_item(
                 item_id,
@@ -195,6 +196,7 @@ class ProductWorkWorker:
                 progress_pct=final_progress,
                 error_code=str(error_code) if error_code else None,
                 error_detail=str(error_detail) if error_detail else None,
+                result=structured_result,
             )
             self._record_attempt_end(
                 attempt,
