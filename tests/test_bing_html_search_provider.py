@@ -19,9 +19,10 @@ class FakeClient:
         return FakeResponse(self.html)
 
 
-def test_bing_html_search_requires_no_api_key_and_returns_result_links():
+def test_bing_html_search_uses_broad_query_and_filters_domains_locally():
     html = '''
     <html><body>
+      <li class="b_algo"><h2><a href="https://techspot.com/noise">Noise</a></h2></li>
       <li class="b_algo"><h2><a href="https://support.lenovo.com/us/en/product/pn1">Lenovo PN1</a></h2></li>
       <li class="b_algo"><h2><a href="https://example.com/pn1">Other result</a></h2></li>
     </body></html>
@@ -35,11 +36,13 @@ def test_bing_html_search_requires_no_api_key_and_returns_result_links():
     assert rows[0].title == "Lenovo PN1"
     assert client.calls[0][0] == "https://www.bing.com/search"
     params = client.calls[0][1]["params"]
-    assert 'site:lenovo.com' in params["q"]
+    assert params["q"] == '"PN1" EAN UPC GTIN'
+    assert "site:" not in params["q"]
+    assert params["count"] > 5
     assert "api_key" not in client.calls[0][1]
 
 
-def test_bing_html_search_dedupes_links_and_caps_limit():
+def test_bing_html_search_dedupes_links_and_caps_return_limit():
     html = '''
     <li class="b_algo"><h2><a href="https://lenovo.com/a">A</a></h2></li>
     <li class="b_algo"><h2><a href="https://lenovo.com/a">A duplicate</a></h2></li>
