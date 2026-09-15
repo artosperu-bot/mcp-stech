@@ -4,6 +4,7 @@ from typing import Any, Callable
 from urllib.parse import urlparse
 
 from stech_mcp.services.identity_barcode_extractor import validate_gtin
+from stech_mcp.services.identity_context import build_identity_context
 from stech_mcp.services.research.search_provider import SearchProviderNotConfigured
 
 
@@ -28,6 +29,47 @@ def _url_matches_domains(url:str,domains:tuple[str,...])->bool:
     host=str(urlparse(str(url or "")).hostname or "").strip().lower().rstrip(".")
     if not host:return False
     return any(host==domain.lower() or host.endswith("."+domain.lower()) for domain in domains)
+
+
+def _quoted(value: Any) -> str | None:
+    text=str(value or "").strip()
+    if not text:return None
+    return '"'+text.replace('"',' ')+'"'
+
+
+def _research_queries(pn: str, context: dict[str,Any]) -> list[str]:
+    """Create conservative discovery queries from already-known product facts.
+
+    Context improves URL discovery only. Destination evidence is still gated by
+    exact PN and trusted official domains before a barcode can be promoted.
+    """
+    queries=[f'"{pn}" EAN UPC GTIN']
+    brand=str(context.get("brand") or "").strip().upper()
+    if brand:
+        queries.append(f'"{brand}" "{pn}"')
+
+    variant=[]
+    processor=_quoted(context.get("processor"))
+    if processor: variant.append(processor)
+    ram=context.get("ram_gb")
+    if ram not in (None,""): variant.append(f'"{ram}GB RAM"')
+    storage=context.get("storage_gb")
+    storage_type=str(context.get("storage_type") or "").strip().upper()
+    if storage not in (None,""):
+        storage_label=f"{storage}GB"+(f" {storage_type}" if storage_type else "")
+        variant.append(_quoted(storage_label) or "")
+    if variant:
+        queries.append(" ".join([f'"{pn}"',*variant]))
+
+    model=_quoted(context.get("model"))
+    if model and brand:
+        queries.append(" ".join([f'"{brand}"',f'"{pn}"',model,"EAN UPC GTIN"]))
+
+    out=[]
+    for query in queries:
+        normalized=" ".join(str(query or "").split())
+        if normalized and normalized not in out: out.append(normalized)
+    return out
 
 
 class ProductIdentityResearchService:
@@ -94,13 +136,10 @@ class ProductIdentityResearchService:
         pn=str(partnumber or "").strip().upper()
         if not pn: raise ValueError("partnumber is required")
 
-        # ProductWork transitions require every handler to leave
-        # LOADING_SOURCE_DATA through ANALYZING_MISSING_FIELDS before it may
-        # research or finish. This also keeps the already-verified fast path
-        # valid without touching the web.
         progress("ANALYZING_MISSING_FIELDS",10)
         product=self.product_repository.get_by_partnumber(pn)
         if product is None: raise LookupError(f"product not found: {pn}")
+        context=build_identity_context(product)
         requested=[]
         for raw in requested_fields or IDENTITY_FIELDS:
             field=str(raw or "").strip().lower()
@@ -109,35 +148,28 @@ class ProductIdentityResearchService:
 
         verified={**self._direct(product),**self._approved(pn)}
         if verified:
-            result={"state":"COMPLETED","result_code":"YA_VERIFICADO","partnumber":pn,"verified_fields":verified,"promoted_fields":[],"conflicts":[],"sources_consulted":[],"error_code":None}
+            result={"state":"COMPLETED","result_code":"YA_VERIFICADO","partnumber":pn,"identity_context":context,"verified_fields":verified,"promoted_fields":[],"conflicts":[],"sources_consulted":[],"search_queries":[],"error_code":None}
             self._audit(pn,result); return result
 
         domains=self._brand_domains(product)
         if not domains:
-            result={"state":"PARTIAL","result_code":"NO_VERIFIED_IDENTITY_FOUND","partnumber":pn,"verified_fields":{},"promoted_fields":[],"conflicts":[],"sources_consulted":[],"error_code":"NO_TRUSTED_IDENTITY_SOURCE"}
+            result={"state":"PARTIAL","result_code":"NO_VERIFIED_IDENTITY_FOUND","partnumber":pn,"identity_context":context,"verified_fields":{},"promoted_fields":[],"conflicts":[],"sources_consulted":[],"search_queries":[],"error_code":"NO_TRUSTED_IDENTITY_SOURCE"}
             self._audit(pn,result); return result
 
         progress("RESEARCHING",30)
-        persisted=[];sources=[];search_error=None;seen=set()
+        persisted=[];sources=[];search_error=None;seen=set();queries=_research_queries(pn,context)
         try:
-            # Search all common barcode labels together; the extractor decides
-            # the actual type and rejects invalid checksums/unlabeled numbers.
-            query=f'"{pn}" EAN UPC GTIN'
-            for hit in self.search_provider.search(query,domains=domains,limit=8)[:5]:
-                if hit.url in seen: continue
-                seen.add(hit.url)
-                # Do not trust the provider filter blindly. Auto-promotion is
-                # possible only when the returned URL itself belongs to a known
-                # official domain for the exact product brand.
-                if not _url_matches_domains(hit.url,domains): continue
-                progress("READING_DOCUMENTS",50)
-                document=self.source_document_service.ingest(hit.url,pn,"MANUFACTURER")
-                sources.append(hit.url)
-                extracted=self.fact_extractor.extract(document,requested,pn)
-                # Exact PN is mandatory for identity auto-promotion. Candidate
-                # persistence also enforces strong source type/confidence.
-                extracted=[row for row in extracted if str(row.get("source_partnumber") or "").strip().upper()==pn]
-                persisted.extend(self._persist_candidates(pn,extracted))
+            for query in queries:
+                for hit in self.search_provider.search(query,domains=domains,limit=8)[:5]:
+                    if hit.url in seen: continue
+                    seen.add(hit.url)
+                    if not _url_matches_domains(hit.url,domains): continue
+                    progress("READING_DOCUMENTS",50)
+                    document=self.source_document_service.ingest(hit.url,pn,"MANUFACTURER")
+                    sources.append(hit.url)
+                    extracted=self.fact_extractor.extract(document,requested,pn)
+                    extracted=[row for row in extracted if str(row.get("source_partnumber") or "").strip().upper()==pn]
+                    persisted.extend(self._persist_candidates(pn,extracted))
         except SearchProviderNotConfigured:
             search_error="SEARCH_PROVIDER_NOT_CONFIGURED"
 
@@ -153,5 +185,5 @@ class ProductIdentityResearchService:
         else:
             state="PARTIAL";result_code="NO_VERIFIED_IDENTITY_FOUND";error_code=search_error or "NO_VERIFIED_IDENTITY_FOUND"
         progress("REBUILDING_PRODUCT_MASTER",95)
-        result={"state":state,"result_code":result_code,"partnumber":pn,"verified_fields":verified,"promoted_fields":list((promotion.get("promoted") or {}).keys()),"conflicts":conflicts,"sources_consulted":sources,"error_code":error_code}
+        result={"state":state,"result_code":result_code,"partnumber":pn,"identity_context":context,"verified_fields":verified,"promoted_fields":list((promotion.get("promoted") or {}).keys()),"conflicts":conflicts,"sources_consulted":sources,"search_queries":queries,"error_code":error_code}
         self._audit(pn,result);return result
