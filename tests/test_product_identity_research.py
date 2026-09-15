@@ -129,10 +129,12 @@ def test_laptop_identity_context_drives_secondary_queries_and_keeps_trusted_sour
     assert any('"Intel Core i5-13420H"' in query and '"16GB RAM"' in query and '"512GB SSD"' in query for query in queries)
     assert any("lenovo.com" in domains for domains in domain_sets)
     assert any("deltron.com.pe" in domains and "intcomex.com" in domains for domains in domain_sets)
-    assert all(
-        set(domains).issubset({"lenovo.com","deltron.com.pe","ingrammicro.com","ingrammicro.com.pe","intcomex.com"})
-        for domains in domain_sets
-    )
+    assert any("ripley.com.pe" in domains and "falabella.com.pe" in domains for domains in domain_sets)
+    allowed={
+        "lenovo.com","deltron.com.pe","ingrammicro.com","ingrammicro.com.pe","intcomex.com",
+        "ripley.com.pe","falabella.com.pe","coolbox.pe","oechsle.pe","plazavea.com.pe",
+    }
+    assert all(set(domains).issubset(allowed) for domains in domain_sets)
     assert out["identity_context"]["model"]=="IdeaPad Slim 3"
     assert out["identity_context"]["ram_gb"]==16
     assert out["identity_context"]["storage_gb"]==512
