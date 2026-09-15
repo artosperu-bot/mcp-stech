@@ -18,6 +18,7 @@ class EnrichTechnicalHandler:
         self.engine = engine
         self.identity_service = None
         self.vtex_ean_sync_service = vtex_ean_sync_service
+        self._vtex_ean_sync_initialized = vtex_ean_sync_service is not None
 
     @staticmethod
     def _input(item: dict[str, Any]) -> dict[str, Any]:
@@ -45,13 +46,44 @@ class EnrichTechnicalHandler:
             )
         return self.identity_service
 
+    def _get_vtex_ean_sync_service(self) -> Any | None:
+        if self.vtex_ean_sync_service is not None:
+            return self.vtex_ean_sync_service
+        if self._vtex_ean_sync_initialized:
+            return None
+        self._vtex_ean_sync_initialized = True
+
+        # Build this capability only when an identity item explicitly asks for
+        # VTEX EAN sync. That keeps the existing image/technical worker startup
+        # independent from VTEX Catalog credentials.
+        from stech_mcp.config import Settings
+        from stech_mcp.services.vtex_ean_client import VtexEanClient
+        from stech_mcp.services.vtex_ean_sync import VtexEanSyncService
+
+        settings = Settings()
+        app_key = str(settings.vtex_app_key or "").strip()
+        app_token = str(settings.vtex_app_token or "").strip()
+        if not app_key or not app_token:
+            return None
+
+        client = VtexEanClient(
+            account_name=settings.vtex_account_name,
+            environment=settings.vtex_environment,
+            app_key=app_key,
+            app_token=app_token,
+            timeout_seconds=settings.vtex_http_timeout_seconds,
+        )
+        self.vtex_ean_sync_service = VtexEanSyncService(client)
+        return self.vtex_ean_sync_service
+
     def _vtex_post_action(self, partnumber: str, payload: dict[str, Any], result: dict[str, Any]) -> str | None:
         if "VTEX_EAN_SYNC" not in self._post_actions(payload):
             return None
-        if self.vtex_ean_sync_service is None:
+        service = self._get_vtex_ean_sync_service()
+        if service is None:
             return "VTEX_EAN_NOT_CONFIGURED"
 
-        sync_result = self.vtex_ean_sync_service.sync(
+        sync_result = service.sync(
             partnumber,
             result.get("verified_fields") if isinstance(result.get("verified_fields"), dict) else {},
         )
