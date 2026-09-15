@@ -17,13 +17,23 @@ class Search:
     def search(self, query, domains=(), limit=5):
         self.calls.append((query, tuple(domains), limit)); return list(self.results)
 
+class LayeredSearch:
+    def __init__(self): self.calls=[]
+    def search(self, query, domains=(), limit=5):
+        domains=tuple(domains)
+        self.calls.append((query, domains, limit))
+        if "deltron.com.pe" in domains:
+            return [SearchResult("Deltron PN1","https://www.deltron.com.pe/product/pn1","PN1 EAN")]
+        return []
+
 class Sources:
     def ingest(self, url, partnumber, source_type):
-        return {"url":url,"source_type":source_type,"confidence_rank":"A1","title":"Official","pages":[{"page":1,"text":"PN1 EAN: 4006381333931"}]}
+        confidence="B" if source_type=="AUTHORIZED_DISTRIBUTOR" else "A1"
+        return {"url":url,"source_type":source_type,"confidence_rank":confidence,"title":"Source","pages":[{"page":1,"text":"PN1 EAN: 4006381333931"}]}
 
 class Extractor:
     def extract(self, doc, fields, pn):
-        return [{"field_code":"ean","raw_value":"4006381333931","normalized_value":"4006381333931","unit":None,"source_type":"MANUFACTURER","source_name":"Official","source_url":doc["url"],"source_partnumber":pn,"evidence_text":"PN1 EAN: 4006381333931","page_number":1,"confidence_rank":"A1","status":"PENDING"}]
+        return [{"field_code":"ean","raw_value":"4006381333931","normalized_value":"4006381333931","unit":None,"source_type":doc["source_type"],"source_name":"Source","source_url":doc["url"],"source_partnumber":pn,"evidence_text":"PN1 EAN: 4006381333931","page_number":1,"confidence_rank":doc["confidence_rank"],"status":"PENDING"}]
 
 class Candidates:
     def __init__(self): self.rows=[]
@@ -32,7 +42,8 @@ class Candidates:
 class Promotion:
     def __init__(self, enrichments): self.enrichments=enrichments
     def evaluate_and_promote(self, pn, candidates):
-        self.enrichments.rows.append({"field_code":"ean","value_text":"4006381333931","is_approved":True,"confidence_grade":"A1"})
+        winner=candidates[0]
+        self.enrichments.rows.append({"field_code":"ean","value_text":"4006381333931","is_approved":True,"confidence_grade":winner["confidence_rank"]})
         return {"state":"COMPLETED","promoted":{"ean":"4006381333931"},"conflicts":[]}
 
 class ConflictPromotion:
@@ -43,12 +54,12 @@ class Audit:
     def add_audit_event(self, **kwargs): pass
 
 
-def build(product, search_results=None, rows=None, promotion=None):
+def build(product, search_results=None, rows=None, promotion=None, search_provider=None):
     enrich=Enrichments(rows)
     return ProductIdentityResearchService(
         product_repository=Products(product), enrichment_repository=enrich,
         candidate_repository=Candidates(), promotion_service=promotion or Promotion(enrich),
-        search_provider=Search(search_results or []), source_document_service=Sources(),
+        search_provider=search_provider or Search(search_results or []), source_document_service=Sources(),
         fact_extractor=Extractor(), audit_repository=Audit(),
     )
 
@@ -105,6 +116,23 @@ def test_laptop_identity_context_drives_secondary_queries_without_relaxing_domai
     assert out["identity_context"]["model"]=="IdeaPad Slim 3"
     assert out["identity_context"]["ram_gb"]==16
     assert out["identity_context"]["storage_gb"]==512
+
+
+def test_falls_back_to_authorized_distributors_when_official_search_has_no_identity():
+    search=LayeredSearch()
+    svc=build(
+        {"part_number":"PN1","marca":"LENOVO","ean":None,"upc":None},
+        search_provider=search,
+    )
+
+    out=svc.research("PN1")
+
+    assert out["state"]=="COMPLETED"
+    assert out["result_code"]=="VERIFICADO"
+    assert out["verified_fields"]["ean"]=="4006381333931"
+    assert "https://www.deltron.com.pe/product/pn1" in out["sources_consulted"]
+    assert any("lenovo.com" in domains for _,domains,_ in search.calls)
+    assert any("deltron.com.pe" in domains for _,domains,_ in search.calls)
 
 
 def test_off_domain_hit_is_not_treated_as_manufacturer_evidence():
