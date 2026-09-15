@@ -77,6 +77,36 @@ def test_missing_ean_uses_only_known_official_brand_domain_and_promotes_exact_pn
     assert progress[-1]==("REBUILDING_PRODUCT_MASTER",95)
 
 
+def test_laptop_identity_context_drives_secondary_queries_without_relaxing_domain():
+    svc=build({
+        "part_number":"PN1",
+        "marca":"LENOVO",
+        "modelo":"IdeaPad Slim 3",
+        "nombre":"Lenovo IdeaPad Slim 3",
+        "ean":None,
+        "upc":None,
+        "atributos_json":{
+            "procesador":"Intel Core i5-13420H",
+            "ram_gb":16,
+            "storage_gb":512,
+            "storage_type":"SSD",
+            "screen_inches":15.6,
+            "color":"Gris",
+        },
+    })
+
+    out=svc.research("PN1")
+    queries=[query for query,_,_ in svc.search_provider.calls]
+
+    assert queries[0]=='"PN1" EAN UPC GTIN'
+    assert '"LENOVO" "PN1"' in queries
+    assert any('"Intel Core i5-13420H"' in query and '"16GB RAM"' in query and '"512GB SSD"' in query for query in queries)
+    assert all("lenovo.com" in domains for _,domains,_ in svc.search_provider.calls)
+    assert out["identity_context"]["model"]=="IdeaPad Slim 3"
+    assert out["identity_context"]["ram_gb"]==16
+    assert out["identity_context"]["storage_gb"]==512
+
+
 def test_off_domain_hit_is_not_treated_as_manufacturer_evidence():
     svc=build(
         {"part_number":"PN1","marca":"LENOVO","ean":None,"upc":None},
