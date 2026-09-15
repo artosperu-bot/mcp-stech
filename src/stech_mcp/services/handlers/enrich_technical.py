@@ -14,9 +14,15 @@ class EnrichTechnicalHandler:
 
     aliases = ("RESEARCH_IDENTITY",)
 
-    def __init__(self, engine: Any, vtex_ean_sync_service: Any | None = None) -> None:
+    def __init__(
+        self,
+        engine: Any,
+        vtex_ean_sync_service: Any | None = None,
+        identity_search_provider: Any | None = None,
+    ) -> None:
         self.engine = engine
         self.identity_service = None
+        self.identity_search_provider = identity_search_provider or engine.search_provider
         self.vtex_ean_sync_service = vtex_ean_sync_service
         self._vtex_ean_sync_initialized = vtex_ean_sync_service is not None
 
@@ -39,7 +45,7 @@ class EnrichTechnicalHandler:
                 enrichment_repository=self.engine.promotion_service.enrichment_repository,
                 candidate_repository=self.engine.candidate_repository,
                 promotion_service=self.engine.promotion_service,
-                search_provider=self.engine.search_provider,
+                search_provider=self.identity_search_provider,
                 source_document_service=self.engine.source_document_service,
                 fact_extractor=IdentityBarcodeExtractor(),
                 audit_repository=self.engine.audit_repository,
