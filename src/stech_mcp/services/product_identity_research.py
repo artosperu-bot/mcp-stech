@@ -17,6 +17,12 @@ _MANUFACTURER_DOMAINS={
     "LOGITECH":("logitech.com",),"MSI":("msi.com",),"SAMSUNG":("samsung.com",),
     "ULEFONE":("ulefone.com",),
 }
+_AUTHORIZED_DISTRIBUTOR_DOMAINS=(
+    "deltron.com.pe",
+    "ingrammicro.com",
+    "ingrammicro.com.pe",
+    "intcomex.com",
+)
 
 
 def _row_value(row: dict[str,Any]) -> Any:
@@ -41,7 +47,7 @@ def _research_queries(pn: str, context: dict[str,Any]) -> list[str]:
     """Create conservative discovery queries from already-known product facts.
 
     Context improves URL discovery only. Destination evidence is still gated by
-    exact PN and trusted official domains before a barcode can be promoted.
+    exact PN and trusted source domains before a barcode can be promoted.
     """
     queries=[f'"{pn}" EAN UPC GTIN']
     brand=str(context.get("brand") or "").strip().upper()
@@ -75,9 +81,10 @@ def _research_queries(pn: str, context: dict[str,Any]) -> list[str]:
 class ProductIdentityResearchService:
     """Research EAN/UPC/GTIN without mutating distributor stock/price rows.
 
-    Only exact-PN evidence from known official manufacturer domains is eligible
-    for automatic promotion. Approved identity facts are stored in the shared
-    STECH-MCP enrichment/evidence path and can be reused by every channel.
+    Manufacturer evidence is tried first. If it yields no valid exact-PN
+    barcode candidate, known authorized distributor domains are consulted as a
+    second layer. Promotion still requires exact PN, valid GTIN checksum and a
+    strong approved source type; marketplaces are not part of this fallback.
     """
     def __init__(self,*,product_repository,enrichment_repository,candidate_repository,promotion_service,search_provider,source_document_service,fact_extractor,audit_repository=None):
         self.product_repository=product_repository;self.enrichment_repository=enrichment_repository
@@ -158,18 +165,24 @@ class ProductIdentityResearchService:
 
         progress("RESEARCHING",30)
         persisted=[];sources=[];search_error=None;seen=set();queries=_research_queries(pn,context)
-        try:
+
+        def research_layer(layer_domains:tuple[str,...],source_type:str)->None:
             for query in queries:
-                for hit in self.search_provider.search(query,domains=domains,limit=8)[:5]:
+                for hit in self.search_provider.search(query,domains=layer_domains,limit=8)[:5]:
                     if hit.url in seen: continue
                     seen.add(hit.url)
-                    if not _url_matches_domains(hit.url,domains): continue
+                    if not _url_matches_domains(hit.url,layer_domains): continue
                     progress("READING_DOCUMENTS",50)
-                    document=self.source_document_service.ingest(hit.url,pn,"MANUFACTURER")
+                    document=self.source_document_service.ingest(hit.url,pn,source_type)
                     sources.append(hit.url)
                     extracted=self.fact_extractor.extract(document,requested,pn)
                     extracted=[row for row in extracted if str(row.get("source_partnumber") or "").strip().upper()==pn]
                     persisted.extend(self._persist_candidates(pn,extracted))
+
+        try:
+            research_layer(domains,"MANUFACTURER")
+            if not persisted:
+                research_layer(_AUTHORIZED_DISTRIBUTOR_DOMAINS,"AUTHORIZED_DISTRIBUTOR")
         except SearchProviderNotConfigured:
             search_error="SEARCH_PROVIDER_NOT_CONFIGURED"
 
