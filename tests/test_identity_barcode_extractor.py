@@ -1,4 +1,8 @@
-from stech_mcp.services.identity_barcode_extractor import IdentityBarcodeExtractor, validate_gtin
+from stech_mcp.services.identity_barcode_extractor import (
+    IdentityBarcodeExtractor,
+    canonical_gtin,
+    validate_gtin,
+)
 
 
 def test_validate_gtin_checksum_for_supported_lengths():
@@ -12,6 +16,15 @@ def test_validate_gtin_rejects_invalid_checksum_or_unsupported_length():
     assert validate_gtin("4006381333932") is False
     assert validate_gtin("036000291453") is False
     assert validate_gtin("1234567890") is False
+
+
+def test_upc_and_gtin14_share_canonical_identity():
+    assert canonical_gtin("740617352214") == "00740617352214"
+    assert canonical_gtin("00740617352214") == "00740617352214"
+
+
+def test_invalid_gtin_has_no_canonical_identity():
+    assert canonical_gtin("740617352215") is None
 
 
 def test_extract_only_labeled_valid_code_with_exact_partnumber():
