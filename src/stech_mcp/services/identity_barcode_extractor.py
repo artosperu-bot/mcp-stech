@@ -21,6 +21,19 @@ def validate_gtin(value: Any) -> bool:
     return (10 - total % 10) % 10 == check
 
 
+def canonical_gtin(value: Any) -> str | None:
+    """Return the GTIN-14 comparison form for a valid barcode.
+
+    This is only an internal identity key. It must not be used to fabricate an
+    outbound EAN/UPC representation that was never observed from a trusted
+    source.
+    """
+    digits = normalize_gtin(value)
+    if not digits or not validate_gtin(digits):
+        return None
+    return digits.zfill(14)
+
+
 def _exact_pn(text: str, partnumber: str) -> bool:
     return re.search(rf"(?<![A-Z0-9]){re.escape(partnumber)}(?![A-Z0-9])", text, re.I) is not None
 
@@ -87,6 +100,7 @@ class IdentityBarcodeExtractor:
                     "field_code": field,
                     "raw_value": value,
                     "normalized_value": value,
+                    "canonical_gtin": canonical_gtin(value),
                     "unit": None,
                     "source_type": source_type,
                     "source_name": document.get("title"),
