@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from stech_mcp.services.vtex_image_client import VtexImageClient
+from stech_mcp.services.vtex_ean_client import VtexEanClient
 
 
 class FakeResponse:
@@ -37,7 +37,7 @@ class RecordingOpener:
 
 def client_with(responses):
     opener = RecordingOpener(responses)
-    client = VtexImageClient(
+    client = VtexEanClient(
         account_name="ststore227",
         environment="vtexcommercestable.com.br",
         app_key="app-key",
