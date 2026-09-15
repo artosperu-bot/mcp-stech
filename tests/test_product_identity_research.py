@@ -26,6 +26,18 @@ class LayeredSearch:
             return [SearchResult("Deltron PN1","https://www.deltron.com.pe/product/pn1","PN1 EAN")]
         return []
 
+class ConsensusSearch:
+    def __init__(self): self.calls=[]
+    def search(self, query, domains=(), limit=5):
+        domains=tuple(domains)
+        self.calls.append((query, domains, limit))
+        if "deltron.com.pe" in domains:
+            return [
+                SearchResult("Deltron PN1","https://www.deltron.com.pe/product/pn1","PN1 EAN"),
+                SearchResult("Ingram PN1","https://pe.ingrammicro.com/product/pn1","PN1 EAN"),
+            ]
+        return []
+
 class Sources:
     def ingest(self, url, partnumber, source_type):
         confidence="B" if source_type=="AUTHORIZED_DISTRIBUTOR" else "A1"
@@ -71,6 +83,7 @@ def test_existing_valid_ean_skips_web_research_and_reports_already_verified():
     assert out["state"]=="COMPLETED"
     assert out["result_code"]=="YA_VERIFICADO"
     assert out["verified_fields"]["ean"]=="4006381333931"
+    assert out["decision"]=="PROMOTED"
     assert svc.search_provider.calls==[]
     assert progress==[("ANALYZING_MISSING_FIELDS",10)]
 
@@ -82,6 +95,7 @@ def test_missing_ean_uses_only_known_official_brand_domain_and_promotes_exact_pn
     assert out["state"]=="COMPLETED"
     assert out["result_code"]=="VERIFICADO"
     assert out["verified_fields"]["ean"]=="4006381333931"
+    assert out["decision"]=="PROMOTED"
     assert svc.search_provider.calls
     assert all("lenovo.com" in domains for _,domains,_ in svc.search_provider.calls)
     assert progress[0]==("ANALYZING_MISSING_FIELDS",10)
@@ -124,8 +138,27 @@ def test_laptop_identity_context_drives_secondary_queries_and_keeps_trusted_sour
     assert out["identity_context"]["storage_gb"]==512
 
 
-def test_falls_back_to_authorized_distributors_when_official_search_has_no_identity():
+def test_single_authorized_distributor_fallback_is_candidate_not_verified():
     search=LayeredSearch()
+    svc=build(
+        {"part_number":"PN1","marca":"LENOVO","ean":None,"upc":None},
+        search_provider=search,
+    )
+
+    out=svc.research("PN1")
+
+    assert out["state"]=="PARTIAL"
+    assert out["result_code"]=="NO_VERIFIED_IDENTITY_FOUND"
+    assert out["decision"]=="CANDIDATE"
+    assert out["candidate_fields"]=={"ean":["4006381333931"]}
+    assert out["verified_fields"]=={}
+    assert "https://www.deltron.com.pe/product/pn1" in out["sources_consulted"]
+    assert any("lenovo.com" in domains for _,domains,_ in search.calls)
+    assert any("deltron.com.pe" in domains for _,domains,_ in search.calls)
+
+
+def test_two_independent_authorized_distributors_agree_and_promote():
+    search=ConsensusSearch()
     svc=build(
         {"part_number":"PN1","marca":"LENOVO","ean":None,"upc":None},
         search_provider=search,
@@ -135,10 +168,10 @@ def test_falls_back_to_authorized_distributors_when_official_search_has_no_ident
 
     assert out["state"]=="COMPLETED"
     assert out["result_code"]=="VERIFICADO"
+    assert out["decision"]=="PROMOTED"
     assert out["verified_fields"]["ean"]=="4006381333931"
-    assert "https://www.deltron.com.pe/product/pn1" in out["sources_consulted"]
-    assert any("lenovo.com" in domains for _,domains,_ in search.calls)
-    assert any("deltron.com.pe" in domains for _,domains,_ in search.calls)
+    assert out["evidence_summary"]["strong_source_count"]==2
+    assert out["evidence_summary"]["has_authorized_distributor"] is True
 
 
 def test_off_domain_hit_is_not_treated_as_manufacturer_evidence():
