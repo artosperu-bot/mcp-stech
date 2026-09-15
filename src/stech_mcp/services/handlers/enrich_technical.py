@@ -14,14 +14,22 @@ class EnrichTechnicalHandler:
 
     aliases = ("RESEARCH_IDENTITY",)
 
-    def __init__(self, engine: Any) -> None:
+    def __init__(self, engine: Any, vtex_ean_sync_service: Any | None = None) -> None:
         self.engine = engine
         self.identity_service = None
+        self.vtex_ean_sync_service = vtex_ean_sync_service
 
     @staticmethod
     def _input(item: dict[str, Any]) -> dict[str, Any]:
         payload = item.get("input")
         return payload if isinstance(payload, dict) else {}
+
+    @staticmethod
+    def _post_actions(payload: dict[str, Any]) -> set[str]:
+        raw = payload.get("post_actions")
+        if not isinstance(raw, list):
+            return set()
+        return {str(value or "").strip().upper() for value in raw if str(value or "").strip()}
 
     def _get_identity_service(self) -> ProductIdentityResearchService:
         if self.identity_service is None:
@@ -37,6 +45,22 @@ class EnrichTechnicalHandler:
             )
         return self.identity_service
 
+    def _vtex_post_action(self, partnumber: str, payload: dict[str, Any], result: dict[str, Any]) -> str | None:
+        if "VTEX_EAN_SYNC" not in self._post_actions(payload):
+            return None
+        if self.vtex_ean_sync_service is None:
+            return "VTEX_EAN_NOT_CONFIGURED"
+
+        sync_result = self.vtex_ean_sync_service.sync(
+            partnumber,
+            result.get("verified_fields") if isinstance(result.get("verified_fields"), dict) else {},
+        )
+        sync_state = str(sync_result.get("state") or "VTEX_EAN_ERROR").strip().upper()
+        if bool(sync_result.get("retryable")):
+            detail = str(sync_result.get("error") or sync_state)
+            raise RetryableWorkError(sync_state, detail)
+        return sync_state
+
     def _identity(self,item:dict[str,Any],progress:Any)->dict[str,Any]:
         partnumber=str(item.get("partnumber") or "").strip().upper()
         payload=self._input(item)
@@ -51,7 +75,8 @@ class EnrichTechnicalHandler:
         state=str(result.get("state") or "").strip().upper()
         result_code=str(result.get("result_code") or "").strip().upper()
         if state=="COMPLETED":
-            return {"status":"COMPLETED","current_step":result_code or "VERIFICADO"}
+            post_state=self._vtex_post_action(partnumber,payload,result)
+            return {"status":"COMPLETED","current_step":post_state or result_code or "VERIFICADO"}
         if state=="REVIEW_REQUIRED":
             return {"status":"REVIEW_REQUIRED","current_step":result_code or "REVIEW_REQUIRED","error_code":result.get("error_code") or "IDENTITY_CONFLICT","error_detail":"barcode identity requires review"}
         if state=="PARTIAL":
