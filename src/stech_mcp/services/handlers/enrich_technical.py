@@ -7,6 +7,7 @@ import httpx
 from stech_mcp.services.identity_barcode_extractor import IdentityBarcodeExtractor
 from stech_mcp.services.product_identity_research import ProductIdentityResearchService
 from stech_mcp.services.product_work_dispatcher import RetryableWorkError
+from stech_mcp.services.research.bing_html_search_provider import BingHtmlSearchProvider
 
 
 class EnrichTechnicalHandler:
@@ -22,7 +23,7 @@ class EnrichTechnicalHandler:
     ) -> None:
         self.engine = engine
         self.identity_service = None
-        self.identity_search_provider = identity_search_provider or engine.search_provider
+        self.identity_search_provider = identity_search_provider or BingHtmlSearchProvider()
         self.vtex_ean_sync_service = vtex_ean_sync_service
         self._vtex_ean_sync_initialized = vtex_ean_sync_service is not None
 
