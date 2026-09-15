@@ -4,6 +4,7 @@ from typing import Any, Callable
 from urllib.parse import urlparse
 
 from stech_mcp.services.identity_barcode_extractor import validate_gtin
+from stech_mcp.services.identity_consensus import evaluate_identity_consensus
 from stech_mcp.services.identity_context import build_identity_context
 from stech_mcp.services.research.search_provider import SearchProviderNotConfigured
 
@@ -41,6 +42,19 @@ def _quoted(value: Any) -> str | None:
     text=str(value or "").strip()
     if not text:return None
     return '"'+text.replace('"',' ')+'"'
+
+
+def _candidate_fields(candidates:list[dict[str,Any]])->dict[str,list[str]]:
+    out:dict[str,list[str]]={}
+    for row in candidates:
+        field=str(row.get("field_code") or "").strip().lower()
+        value=str(row.get("normalized_value") or "").strip()
+        if field not in IDENTITY_FIELDS or not value:
+            continue
+        values=out.setdefault(field,[])
+        if value not in values:
+            values.append(value)
+    return out
 
 
 def _research_queries(pn: str, context: dict[str,Any]) -> list[str]:
@@ -81,10 +95,10 @@ def _research_queries(pn: str, context: dict[str,Any]) -> list[str]:
 class ProductIdentityResearchService:
     """Research EAN/UPC/GTIN without mutating distributor stock/price rows.
 
-    Manufacturer evidence is tried first. If it yields no valid exact-PN
-    barcode candidate, known authorized distributor domains are consulted as a
-    second layer. Promotion still requires exact PN, valid GTIN checksum and a
-    strong approved source type; marketplaces are not part of this fallback.
+    Manufacturer evidence is tried first. If it yields no exact-PN barcode,
+    known authorized distributor domains are consulted as a second layer.
+    Identity promotion is gated by Rule B consensus before candidates reach the
+    generic fact promotion service.
     """
     def __init__(self,*,product_repository,enrichment_repository,candidate_repository,promotion_service,search_provider,source_document_service,fact_extractor,audit_repository=None):
         self.product_repository=product_repository;self.enrichment_repository=enrichment_repository
@@ -155,12 +169,24 @@ class ProductIdentityResearchService:
 
         verified={**self._direct(product),**self._approved(pn)}
         if verified:
-            result={"state":"COMPLETED","result_code":"YA_VERIFICADO","partnumber":pn,"identity_context":context,"verified_fields":verified,"promoted_fields":[],"conflicts":[],"sources_consulted":[],"search_queries":[],"error_code":None}
+            result={
+                "state":"COMPLETED","result_code":"YA_VERIFICADO","partnumber":pn,
+                "identity_context":context,"verified_fields":verified,"candidate_fields":{},
+                "promoted_fields":[],"decision":"PROMOTED",
+                "evidence_summary":{"strong_source_count":0,"has_primary":False,"has_authorized_distributor":False,"already_verified":True},
+                "conflicts":[],"sources_consulted":[],"search_queries":[],"error_code":None,
+            }
             self._audit(pn,result); return result
 
         domains=self._brand_domains(product)
         if not domains:
-            result={"state":"PARTIAL","result_code":"NO_VERIFIED_IDENTITY_FOUND","partnumber":pn,"identity_context":context,"verified_fields":{},"promoted_fields":[],"conflicts":[],"sources_consulted":[],"search_queries":[],"error_code":"NO_TRUSTED_IDENTITY_SOURCE"}
+            result={
+                "state":"PARTIAL","result_code":"NO_VERIFIED_IDENTITY_FOUND","partnumber":pn,
+                "identity_context":context,"verified_fields":{},"candidate_fields":{},
+                "promoted_fields":[],"decision":"NO_RESULT",
+                "evidence_summary":{"strong_source_count":0,"has_primary":False,"has_authorized_distributor":False},
+                "conflicts":[],"sources_consulted":[],"search_queries":[],"error_code":"NO_TRUSTED_IDENTITY_SOURCE",
+            }
             self._audit(pn,result); return result
 
         progress("RESEARCHING",30)
@@ -187,16 +213,26 @@ class ProductIdentityResearchService:
             search_error="SEARCH_PROVIDER_NOT_CONFIGURED"
 
         progress("VALIDATING",75)
+        consensus=evaluate_identity_consensus(pn,persisted)
         promotion={"promoted":{},"conflicts":[]}
-        if persisted: promotion=self.promotion_service.evaluate_and_promote(pn,persisted)
-        conflicts=list(promotion.get("conflicts") or [])
+        if consensus.get("decision")=="PROMOTED":
+            promotion=self.promotion_service.evaluate_and_promote(pn,list(consensus.get("promotable_candidates") or []))
+
+        conflicts=list(consensus.get("conflicts") or [])+list(promotion.get("conflicts") or [])
         verified={**self._direct(product),**self._approved(pn)}
+        decision=str(consensus.get("decision") or "NO_RESULT").strip().upper()
         if conflicts:
-            state="REVIEW_REQUIRED";result_code="REVIEW_REQUIRED";error_code="IDENTITY_CONFLICT"
+            state="REVIEW_REQUIRED";result_code="REVIEW_REQUIRED";error_code="IDENTITY_CONFLICT";decision="CONFLICT"
         elif verified:
-            state="COMPLETED";result_code="VERIFICADO";error_code=None
+            state="COMPLETED";result_code="VERIFICADO";error_code=None;decision="PROMOTED"
         else:
             state="PARTIAL";result_code="NO_VERIFIED_IDENTITY_FOUND";error_code=search_error or "NO_VERIFIED_IDENTITY_FOUND"
         progress("REBUILDING_PRODUCT_MASTER",95)
-        result={"state":state,"result_code":result_code,"partnumber":pn,"identity_context":context,"verified_fields":verified,"promoted_fields":list((promotion.get("promoted") or {}).keys()),"conflicts":conflicts,"sources_consulted":sources,"search_queries":queries,"error_code":error_code}
+        result={
+            "state":state,"result_code":result_code,"partnumber":pn,"identity_context":context,
+            "verified_fields":verified,"candidate_fields":_candidate_fields(persisted),
+            "promoted_fields":list((promotion.get("promoted") or {}).keys()),"decision":decision,
+            "evidence_summary":dict(consensus.get("evidence_summary") or {}),
+            "conflicts":conflicts,"sources_consulted":sources,"search_queries":queries,"error_code":error_code,
+        }
         self._audit(pn,result);return result
