@@ -84,6 +84,11 @@ class _BingResultsParser(HTMLParser):
 class BingHtmlSearchProvider:
     """Discover public result URLs through Bing HTML without an API key.
 
+    Domain restrictions are enforced locally after discovery instead of being
+    embedded as ``site:`` operators. Bing can ignore or badly rank site-scoped
+    product queries, so broad exact-PN discovery plus deterministic host
+    filtering gives us more useful candidates without weakening trust rules.
+
     Search-result snippets are discovery hints only. Product identity acceptance
     still happens later from the opened destination page and exact-PN evidence.
     """
@@ -108,20 +113,17 @@ class BingHtmlSearchProvider:
             raise ValueError("query is required")
 
         normalized_domains = _normalize_domains(domains)
-        if normalized_domains:
-            if len(normalized_domains) == 1:
-                text = f"{text} site:{normalized_domains[0]}"
-            else:
-                sites = " OR ".join(f"site:{domain}" for domain in normalized_domains)
-                text = f"{text} ({sites})"
+        return_limit = max(1, min(int(limit), 20))
+        # Bing frequently mixes unrelated hosts into exact product searches.
+        # Read a wider result window, then keep only hosts we explicitly trust.
+        fetch_count = max(20, min(return_limit * 5, 50))
 
-        count = max(1, min(int(limit), 20))
         owned_client = self.http_client is None
         client = self.http_client or httpx.Client(follow_redirects=True)
         try:
             response = client.get(
                 _BING_SEARCH_URL,
-                params={"q": text, "count": count},
+                params={"q": text, "count": fetch_count},
                 headers={"User-Agent": _USER_AGENT, "Accept": "text/html,application/xhtml+xml"},
                 timeout=self.timeout_seconds,
             )
@@ -139,6 +141,6 @@ class BingHtmlSearchProvider:
                 continue
             seen.add(url)
             results.append(SearchResult(title=title, url=url, description=None))
-            if len(results) >= count:
+            if len(results) >= return_limit:
                 break
         return results
