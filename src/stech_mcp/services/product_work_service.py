@@ -21,6 +21,8 @@ _IDENTITY_INPUT_KEYS = {
     "requested_fields",
     "scope",
     "source_context",
+    "post_actions",
+    "vtex_account_code",
 }
 _CONTEXT_KEYS = (
     "scope",
@@ -28,6 +30,8 @@ _CONTEXT_KEYS = (
     "template_code",
     "requested_fields",
     "image_target_count",
+    "post_actions",
+    "vtex_account_code",
 )
 
 
@@ -38,6 +42,18 @@ class ProductWorkService:
             raise ValueError("max_attempts must be between 1 and 10")
         self.repository = repository
         self.max_attempts = normalized_max_attempts
+
+    @staticmethod
+    def _sanitize_identity_post_actions(value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        allowed = {"VTEX_EAN_SYNC"}
+        out: list[str] = []
+        for raw in value:
+            token = str(raw or "").strip().upper()
+            if token in allowed and token not in out:
+                out.append(token)
+        return out
 
     def create_job(
         self,
@@ -63,6 +79,19 @@ class ProductWorkService:
                 continue
             category = str(row.get("category_code") or "").strip().upper() or None
             channel = str(row.get("channel_code") or "").strip().upper() or None
+
+            if normalized_work_type == "RESEARCH_IDENTITY":
+                actions = self._sanitize_identity_post_actions(row.get("post_actions"))
+                if actions:
+                    row["post_actions"] = actions
+                else:
+                    row.pop("post_actions", None)
+                account = str(row.get("vtex_account_code") or "").strip().upper()
+                if account:
+                    row["vtex_account_code"] = account
+                else:
+                    row.pop("vtex_account_code", None)
+
             extra_context = {
                 key: row.get(key)
                 for key in _CONTEXT_KEYS
@@ -78,9 +107,9 @@ class ProductWorkService:
                 context=extra_context or None,
             )
 
-            # Identity work is canonical per selected PN, independent of channel,
-            # category or duplicate UI rows. Technical work keeps its historical
-            # product-level behavior unless an explicit scoped context is present.
+            # Identity work remains canonical per selected PN inside a single job.
+            # The context hash still records optional post-actions so separate jobs
+            # can distinguish research-only from research+VTEX workflows.
             contextual = bool(extra_context or channel)
             if normalized_work_type == "RESEARCH_IDENTITY":
                 dedupe_key = pn
@@ -96,8 +125,8 @@ class ProductWorkService:
                 item = {key: row[key] for key in _TECHNICAL_INPUT_KEYS if key in row}
             elif normalized_work_type == "RESEARCH_IDENTITY":
                 # Identity work is deliberately isolated from commercial data.
-                # Persist only exact PN plus identity research context so callers
-                # cannot attach price/stock/publication mutations to this job.
+                # Persist only exact PN, safe identity research context and an
+                # explicitly-whitelisted post action.
                 item = {key: row[key] for key in _IDENTITY_INPUT_KEYS if key in row}
             else:
                 item = dict(row)
