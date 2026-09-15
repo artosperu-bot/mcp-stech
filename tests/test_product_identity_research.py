@@ -88,7 +88,7 @@ def test_missing_ean_uses_only_known_official_brand_domain_and_promotes_exact_pn
     assert progress[-1]==("REBUILDING_PRODUCT_MASTER",95)
 
 
-def test_laptop_identity_context_drives_secondary_queries_without_relaxing_domain():
+def test_laptop_identity_context_drives_secondary_queries_and_keeps_trusted_source_layers():
     svc=build({
         "part_number":"PN1",
         "marca":"LENOVO",
@@ -108,11 +108,17 @@ def test_laptop_identity_context_drives_secondary_queries_without_relaxing_domai
 
     out=svc.research("PN1")
     queries=[query for query,_,_ in svc.search_provider.calls]
+    domain_sets=[domains for _,domains,_ in svc.search_provider.calls]
 
     assert queries[0]=='"PN1" EAN UPC GTIN'
     assert '"LENOVO" "PN1"' in queries
     assert any('"Intel Core i5-13420H"' in query and '"16GB RAM"' in query and '"512GB SSD"' in query for query in queries)
-    assert all("lenovo.com" in domains for _,domains,_ in svc.search_provider.calls)
+    assert any("lenovo.com" in domains for domains in domain_sets)
+    assert any("deltron.com.pe" in domains and "intcomex.com" in domains for domains in domain_sets)
+    assert all(
+        set(domains).issubset({"lenovo.com","deltron.com.pe","ingrammicro.com","ingrammicro.com.pe","intcomex.com"})
+        for domains in domain_sets
+    )
     assert out["identity_context"]["model"]=="IdeaPad Slim 3"
     assert out["identity_context"]["ram_gb"]==16
     assert out["identity_context"]["storage_gb"]==512
