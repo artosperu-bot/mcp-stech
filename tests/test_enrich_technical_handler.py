@@ -1,5 +1,6 @@
 from stech_mcp.services.handlers.enrich_technical import EnrichTechnicalHandler
 from stech_mcp.services.product_work_dispatcher import RetryableWorkError
+from stech_mcp.services.research.bing_html_search_provider import BingHtmlSearchProvider
 
 
 class FakeEngine:
@@ -24,6 +25,12 @@ class FakeIdentityService:
         self.calls.append((partnumber, requested_fields))
         progress("ANALYZING_MISSING_FIELDS", 10)
         return dict(self.result)
+
+
+def test_handler_defaults_identity_research_to_keyless_bing_html():
+    handler = EnrichTechnicalHandler(FakeEngine({"state": "COMPLETED", "remaining_fields": [], "conflicts": [], "error_code": None}))
+
+    assert isinstance(handler.identity_search_provider, BingHtmlSearchProvider)
 
 
 def test_handler_maps_engine_review_to_queue_review():
