@@ -24,6 +24,13 @@ _AUTHORIZED_DISTRIBUTOR_DOMAINS=(
     "ingrammicro.com.pe",
     "intcomex.com",
 )
+_TRUSTED_RETAILER_DOMAINS=(
+    "ripley.com.pe",
+    "falabella.com.pe",
+    "coolbox.pe",
+    "oechsle.pe",
+    "plazavea.com.pe",
+)
 
 
 def _row_value(row: dict[str,Any]) -> Any:
@@ -95,10 +102,9 @@ def _research_queries(pn: str, context: dict[str,Any]) -> list[str]:
 class ProductIdentityResearchService:
     """Research EAN/UPC/GTIN without mutating distributor stock/price rows.
 
-    Manufacturer evidence is tried first. If it yields no exact-PN barcode,
-    known authorized distributor domains are consulted as a second layer.
-    Identity promotion is gated by Rule B consensus before candidates reach the
-    generic fact promotion service.
+    Manufacturer evidence is tried first, authorized distributors second, and
+    trusted retailers last. Retailer evidence is retained only as candidate
+    evidence; Rule B consensus is the only gate that can reach promotion.
     """
     def __init__(self,*,product_repository,enrichment_repository,candidate_repository,promotion_service,search_provider,source_document_service,fact_extractor,audit_repository=None):
         self.product_repository=product_repository;self.enrichment_repository=enrichment_repository
@@ -130,6 +136,12 @@ class ProductIdentityResearchService:
 
     def _persist_candidates(self,pn:str,candidates:list[dict[str,Any]])->list[dict[str,Any]]:
         out=[]
+        allowed={
+            "MANUFACTURER":{"A1","A2"},
+            "OFFICIAL_DOCUMENT":{"A1","A2"},
+            "AUTHORIZED_DISTRIBUTOR":{"A1","A2","B"},
+            "TRUSTED_RETAILER":{"C"},
+        }
         for row in candidates:
             field=str(row.get("field_code") or "").strip().lower()
             value=str(row.get("normalized_value") or "").strip()
@@ -137,7 +149,7 @@ class ProductIdentityResearchService:
             source_pn=str(row.get("source_partnumber") or "").strip().upper()
             source_type=str(row.get("source_type") or "").strip().upper()
             confidence=str(row.get("confidence_rank") or "").strip().upper()
-            if source_pn!=pn or source_type not in {"MANUFACTURER","OFFICIAL_DOCUMENT","AUTHORIZED_DISTRIBUTOR"} or confidence not in {"A1","A2","B"}:
+            if source_pn!=pn or confidence not in allowed.get(source_type,set()):
                 continue
             saved=self.candidate_repository.add(
                 partnumber=pn,field_code=field,raw_value=row.get("raw_value"),normalized_value=value,
@@ -207,8 +219,12 @@ class ProductIdentityResearchService:
 
         try:
             research_layer(domains,"MANUFACTURER")
-            if not persisted:
+            consensus=evaluate_identity_consensus(pn,persisted)
+            if consensus.get("decision") not in {"PROMOTED","CONFLICT"}:
                 research_layer(_AUTHORIZED_DISTRIBUTOR_DOMAINS,"AUTHORIZED_DISTRIBUTOR")
+                consensus=evaluate_identity_consensus(pn,persisted)
+            if consensus.get("decision") not in {"PROMOTED","CONFLICT"}:
+                research_layer(_TRUSTED_RETAILER_DOMAINS,"TRUSTED_RETAILER")
         except SearchProviderNotConfigured:
             search_error="SEARCH_PROVIDER_NOT_CONFIGURED"
 
