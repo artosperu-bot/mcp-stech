@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 import httpx
@@ -8,6 +9,9 @@ from stech_mcp.services.identity_barcode_extractor import IdentityBarcodeExtract
 from stech_mcp.services.product_identity_research import ProductIdentityResearchService
 from stech_mcp.services.product_work_dispatcher import RetryableWorkError
 from stech_mcp.services.research.bing_html_search_provider import BingHtmlSearchProvider
+
+
+_VTEX_EAN_SYNC_LOCK = threading.Lock()
 
 
 class EnrichTechnicalHandler:
@@ -39,6 +43,21 @@ class EnrichTechnicalHandler:
             return set()
         return {str(value or "").strip().upper() for value in raw if str(value or "").strip()}
 
+    @staticmethod
+    def _identity_result_payload(result: dict[str, Any], vtex_state: str | None) -> dict[str, Any]:
+        return {
+            "partnumber": str(result.get("partnumber") or "").strip().upper(),
+            "identity_state": str(result.get("state") or "").strip().upper(),
+            "identity_result_code": str(result.get("result_code") or "").strip().upper(),
+            "verified_fields": dict(result.get("verified_fields") or {}) if isinstance(result.get("verified_fields"), dict) else {},
+            "candidate_fields": dict(result.get("candidate_fields") or {}) if isinstance(result.get("candidate_fields"), dict) else {},
+            "promoted_fields": list(result.get("promoted_fields") or []) if isinstance(result.get("promoted_fields"), list) else [],
+            "decision": str(result.get("decision") or "").strip().upper(),
+            "evidence_summary": dict(result.get("evidence_summary") or {}) if isinstance(result.get("evidence_summary"), dict) else {},
+            "vtex_state": str(vtex_state).strip().upper() if vtex_state else None,
+            "error_code": result.get("error_code"),
+        }
+
     def _get_identity_service(self) -> ProductIdentityResearchService:
         if self.identity_service is None:
             self.identity_service = ProductIdentityResearchService(
@@ -60,9 +79,6 @@ class EnrichTechnicalHandler:
             return None
         self._vtex_ean_sync_initialized = True
 
-        # Build this capability only when an identity item explicitly asks for
-        # VTEX EAN sync. That keeps the existing image/technical worker startup
-        # independent from VTEX Catalog credentials.
         from stech_mcp.config import Settings
         from stech_mcp.services.vtex_ean_client import VtexEanClient
         from stech_mcp.services.vtex_ean_sync import VtexEanSyncService
@@ -90,10 +106,14 @@ class EnrichTechnicalHandler:
         if service is None:
             return "VTEX_EAN_NOT_CONFIGURED"
 
-        sync_result = service.sync(
-            partnumber,
-            result.get("verified_fields") if isinstance(result.get("verified_fields"), dict) else {},
-        )
+        # Research stays parallel. Only the create-only VTEX EAN read/write/
+        # readback critical section is serialized across all worker threads in
+        # this MCP process.
+        with _VTEX_EAN_SYNC_LOCK:
+            sync_result = service.sync(
+                partnumber,
+                result.get("verified_fields") if isinstance(result.get("verified_fields"), dict) else {},
+            )
         sync_state = str(sync_result.get("state") or "VTEX_EAN_ERROR").strip().upper()
         if bool(sync_result.get("retryable")):
             detail = str(sync_result.get("error") or sync_state)
@@ -115,11 +135,24 @@ class EnrichTechnicalHandler:
         result_code=str(result.get("result_code") or "").strip().upper()
         if state=="COMPLETED":
             post_state=self._vtex_post_action(partnumber,payload,result)
-            return {"status":"COMPLETED","current_step":post_state or result_code or "VERIFICADO"}
+            return {
+                "status":"COMPLETED",
+                "current_step":post_state or result_code or "VERIFICADO",
+                "result":self._identity_result_payload(result,post_state),
+            }
         if state=="REVIEW_REQUIRED":
-            return {"status":"REVIEW_REQUIRED","current_step":result_code or "REVIEW_REQUIRED","error_code":result.get("error_code") or "IDENTITY_CONFLICT","error_detail":"barcode identity requires review"}
+            return {
+                "status":"REVIEW_REQUIRED","current_step":result_code or "REVIEW_REQUIRED",
+                "error_code":result.get("error_code") or "IDENTITY_CONFLICT",
+                "error_detail":"barcode identity requires review",
+                "result":self._identity_result_payload(result,None),
+            }
         if state=="PARTIAL":
-            return {"status":"PARTIAL","current_step":result_code or "NO_VERIFIED_IDENTITY_FOUND","error_code":result.get("error_code"),"error_detail":"no verified exact barcode found yet"}
+            return {
+                "status":"PARTIAL","current_step":result_code or "NO_VERIFIED_IDENTITY_FOUND",
+                "error_code":result.get("error_code"),"error_detail":"no verified exact barcode found yet",
+                "result":self._identity_result_payload(result,None),
+            }
         return {"status":"FAILED","current_step":"INVALID_IDENTITY_RESEARCH_STATE","error_code":"INVALID_IDENTITY_RESEARCH_STATE","error_detail":f"unsupported identity research state: {state or '<empty>'}"}
 
     def __call__(self, item: dict[str, Any], progress: Any) -> dict[str, Any]:
