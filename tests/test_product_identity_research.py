@@ -66,12 +66,18 @@ class Audit:
     def add_audit_event(self, **kwargs): pass
 
 
-def build(product, search_results=None, rows=None, promotion=None, search_provider=None):
+def build(
+    product, search_results=None, rows=None, promotion=None, search_provider=None,
+    fallback_search_provider=None, max_fallback_searches=2,
+):
     enrich=Enrichments(rows)
     return ProductIdentityResearchService(
         product_repository=Products(product), enrichment_repository=enrich,
         candidate_repository=Candidates(), promotion_service=promotion or Promotion(enrich),
-        search_provider=search_provider or Search(search_results or []), source_document_service=Sources(),
+        search_provider=search_provider or Search(search_results or []),
+        fallback_search_provider=fallback_search_provider,
+        max_fallback_searches=max_fallback_searches,
+        source_document_service=Sources(),
         fact_extractor=Extractor(), audit_repository=Audit(),
     )
 
@@ -124,9 +130,10 @@ def test_laptop_identity_context_drives_secondary_queries_and_keeps_trusted_sour
     queries=[query for query,_,_ in svc.search_provider.calls]
     domain_sets=[domains for _,domains,_ in svc.search_provider.calls]
 
-    assert queries[0]=='"PN1" EAN UPC GTIN'
-    assert '"LENOVO" "PN1"' in queries
-    assert any('"Intel Core i5-13420H"' in query and '"16GB RAM"' in query and '"512GB SSD"' in query for query in queries)
+    assert len(set(queries)) <= 2
+    assert queries[0]=='"PN1" "LENOVO" EAN UPC GTIN barcode'
+    assert any('"PN1"' in query and '"IdeaPad Slim 3"' in query and "barcode product code" in query for query in queries)
+    assert all('"Intel Core i5-13420H"' not in query for query in queries)
     assert any("lenovo.com" in domains for domains in domain_sets)
     assert any("deltron.com.pe" in domains and "intcomex.com" in domains for domains in domain_sets)
     assert any("ripley.com.pe" in domains and "falabella.com.pe" in domains for domains in domain_sets)
@@ -209,3 +216,63 @@ def test_conflict_is_review_required_and_never_reported_as_verified():
     assert out["result_code"]=="REVIEW_REQUIRED"
     assert out["error_code"]=="IDENTITY_CONFLICT"
     assert out["verified_fields"]=={}
+
+
+def test_noisy_bing_result_without_exact_pn_metadata_falls_back_to_tavily():
+    bing=Search([
+        SearchResult("Lenovo Support","https://support.lenovo.com/","generic support page"),
+    ])
+    tavily=Search([
+        SearchResult("Lenovo PN1","https://support.lenovo.com/pn1","PN1 EAN 4006381333931"),
+    ])
+    svc=build(
+        {"part_number":"PN1","marca":"LENOVO","modelo":"V15 G5 IRL","ean":None,"upc":None},
+        search_provider=bing,
+        fallback_search_provider=tavily,
+    )
+
+    out=svc.research("PN1")
+
+    assert out["state"]=="COMPLETED"
+    assert out["decision"]=="PROMOTED"
+    assert out["verified_fields"]["ean"]=="4006381333931"
+    assert out["fallback_searches_used"]==1
+    assert len(tavily.calls)==1
+    assert out["fallback_queries"][0]=='"PN1" "LENOVO" EAN UPC GTIN barcode'
+    assert "https://support.lenovo.com/" not in out["sources_consulted"]
+    assert "https://support.lenovo.com/pn1" in out["sources_consulted"]
+
+
+def test_tavily_fallback_has_hard_two_search_cap_per_partnumber():
+    bing=Search([])
+    tavily=Search([])
+    svc=build(
+        {"part_number":"PN1","marca":"LENOVO","modelo":"V15 G5 IRL","ean":None,"upc":None},
+        search_provider=bing,
+        fallback_search_provider=tavily,
+        max_fallback_searches=2,
+    )
+
+    out=svc.research("PN1")
+
+    assert out["state"]=="PARTIAL"
+    assert out["fallback_searches_used"]==2
+    assert len(tavily.calls)==2
+    assert len(out["fallback_queries"])==2
+
+
+def test_tavily_budget_can_be_disabled_per_partnumber():
+    bing=Search([])
+    tavily=Search([SearchResult("Lenovo PN1","https://support.lenovo.com/pn1","PN1 EAN")])
+    svc=build(
+        {"part_number":"PN1","marca":"LENOVO","ean":None,"upc":None},
+        search_provider=bing,
+        fallback_search_provider=tavily,
+        max_fallback_searches=0,
+    )
+
+    out=svc.research("PN1")
+
+    assert out["state"]=="PARTIAL"
+    assert out["fallback_searches_used"]==0
+    assert tavily.calls==[]
