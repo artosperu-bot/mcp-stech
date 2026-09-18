@@ -65,38 +65,45 @@ def _candidate_fields(candidates:list[dict[str,Any]])->dict[str,list[str]]:
 
 
 def _research_queries(pn: str, context: dict[str,Any]) -> list[str]:
-    """Create conservative discovery queries from already-known product facts.
+    """Return at most two high-value exact-PN discovery queries.
 
-    Context improves URL discovery only. Destination evidence is still gated by
-    exact PN and trusted source domains before a barcode can be promoted.
+    Bing is free but noisy. We keep its discovery work bounded and focused so a
+    failed Bing pass can fall through quickly to the Tavily credit budget.
+    Destination pages still need exact-PN evidence before any barcode is kept.
     """
-    queries=[f'"{pn}" EAN UPC GTIN']
-    brand=str(context.get("brand") or "").strip().upper()
-    if brand:
-        queries.append(f'"{brand}" "{pn}"')
-
-    variant=[]
-    processor=_quoted(context.get("processor"))
-    if processor: variant.append(processor)
-    ram=context.get("ram_gb")
-    if ram not in (None,""): variant.append(f'"{ram}GB RAM"')
-    storage=context.get("storage_gb")
-    storage_type=str(context.get("storage_type") or "").strip().upper()
-    if storage not in (None,""):
-        storage_label=f"{storage}GB"+(f" {storage_type}" if storage_type else "")
-        variant.append(_quoted(storage_label) or "")
-    if variant:
-        queries.append(" ".join([f'"{pn}"',*variant]))
-
+    brand=_quoted(str(context.get("brand") or "").strip().upper())
     model=_quoted(context.get("model"))
-    if model and brand:
-        queries.append(" ".join([f'"{brand}"',f'"{pn}"',model,"EAN UPC GTIN"]))
+    primary=" ".join(value for value in [f'"{pn}"',brand or "","EAN UPC GTIN barcode"] if value)
+    secondary=" ".join(value for value in [f'"{pn}"',brand or "",model or "","barcode product code"] if value)
 
     out=[]
-    for query in queries:
+    for query in (primary,secondary):
         normalized=" ".join(str(query or "").split())
         if normalized and normalized not in out: out.append(normalized)
-    return out
+    return out[:2]
+
+
+def _hit_mentions_partnumber(hit: Any, pn: str) -> bool:
+    haystack=" ".join([
+        str(getattr(hit,"title","") or ""),
+        str(getattr(hit,"url","") or ""),
+        str(getattr(hit,"description","") or ""),
+    ])
+    return pn.casefold() in haystack.casefold()
+
+
+def _source_type_for_url(url: str, manufacturer_domains: tuple[str,...]) -> str | None:
+    if _url_matches_domains(url,manufacturer_domains): return "MANUFACTURER"
+    if _url_matches_domains(url,_AUTHORIZED_DISTRIBUTOR_DOMAINS): return "AUTHORIZED_DISTRIBUTOR"
+    if _url_matches_domains(url,_TRUSTED_RETAILER_DOMAINS): return "TRUSTED_RETAILER"
+    return None
+
+
+def _first_candidate_value(candidates:list[dict[str,Any]])->str|None:
+    for row in candidates:
+        value=str(row.get("normalized_value") or "").strip()
+        if value and validate_gtin(value): return value
+    return None
 
 
 class ProductIdentityResearchService:
@@ -106,10 +113,17 @@ class ProductIdentityResearchService:
     trusted retailers last. Retailer evidence is retained only as candidate
     evidence; Rule B consensus is the only gate that can reach promotion.
     """
-    def __init__(self,*,product_repository,enrichment_repository,candidate_repository,promotion_service,search_provider,source_document_service,fact_extractor,audit_repository=None):
+    def __init__(
+        self,*,
+        product_repository,enrichment_repository,candidate_repository,promotion_service,
+        search_provider,source_document_service,fact_extractor,audit_repository=None,
+        fallback_search_provider=None,max_fallback_searches:int=2,
+    ):
         self.product_repository=product_repository;self.enrichment_repository=enrichment_repository
         self.candidate_repository=candidate_repository;self.promotion_service=promotion_service
-        self.search_provider=search_provider;self.source_document_service=source_document_service
+        self.search_provider=search_provider;self.fallback_search_provider=fallback_search_provider
+        self.max_fallback_searches=max(0,min(int(max_fallback_searches),2))
+        self.source_document_service=source_document_service
         self.fact_extractor=fact_extractor;self.audit_repository=audit_repository
 
     @staticmethod
@@ -186,7 +200,7 @@ class ProductIdentityResearchService:
                 "identity_context":context,"verified_fields":verified,"candidate_fields":{},
                 "promoted_fields":[],"decision":"PROMOTED",
                 "evidence_summary":{"strong_source_count":0,"has_primary":False,"has_authorized_distributor":False,"already_verified":True},
-                "conflicts":[],"sources_consulted":[],"search_queries":[],"error_code":None,
+                "conflicts":[],"sources_consulted":[],"search_queries":[],"fallback_queries":[],"fallback_searches_used":0,"error_code":None,
             }
             self._audit(pn,result); return result
 
@@ -197,27 +211,61 @@ class ProductIdentityResearchService:
                 "identity_context":context,"verified_fields":{},"candidate_fields":{},
                 "promoted_fields":[],"decision":"NO_RESULT",
                 "evidence_summary":{"strong_source_count":0,"has_primary":False,"has_authorized_distributor":False},
-                "conflicts":[],"sources_consulted":[],"search_queries":[],"error_code":"NO_TRUSTED_IDENTITY_SOURCE",
+                "conflicts":[],"sources_consulted":[],"search_queries":[],"fallback_queries":[],"fallback_searches_used":0,"error_code":"NO_TRUSTED_IDENTITY_SOURCE",
             }
             self._audit(pn,result); return result
 
         progress("RESEARCHING",30)
         persisted=[];sources=[];search_error=None;seen=set();queries=_research_queries(pn,context)
+        fallback_queries=[];fallback_searches_used=0
+        all_domains=tuple(dict.fromkeys([*domains,*_AUTHORIZED_DISTRIBUTOR_DOMAINS,*_TRUSTED_RETAILER_DOMAINS]))
+
+        def ingest_hits(hits:list[Any],allowed_domains:tuple[str,...],forced_source_type:str|None=None)->int:
+            accepted=0
+            for hit in hits:
+                url=str(getattr(hit,"url","") or "").strip()
+                if not url or url in seen: continue
+                # Bing can return a trusted host's generic home/support page even
+                # for a quoted PN. Do not spend document reads on those results.
+                if not _hit_mentions_partnumber(hit,pn): continue
+                if not _url_matches_domains(url,allowed_domains): continue
+                source_type=forced_source_type or _source_type_for_url(url,domains)
+                if not source_type: continue
+                seen.add(url);accepted+=1
+                progress("READING_DOCUMENTS",50)
+                document=self.source_document_service.ingest(url,pn,source_type)
+                sources.append(url)
+                extracted=self.fact_extractor.extract(document,requested,pn)
+                extracted=[row for row in extracted if str(row.get("source_partnumber") or "").strip().upper()==pn]
+                persisted.extend(self._persist_candidates(pn,extracted))
+            return accepted
 
         def research_layer(layer_domains:tuple[str,...],source_type:str)->None:
             for query in queries:
-                for hit in self.search_provider.search(query,domains=layer_domains,limit=8)[:5]:
-                    if hit.url in seen: continue
-                    seen.add(hit.url)
-                    if not _url_matches_domains(hit.url,layer_domains): continue
-                    progress("READING_DOCUMENTS",50)
-                    document=self.source_document_service.ingest(hit.url,pn,source_type)
-                    sources.append(hit.url)
-                    extracted=self.fact_extractor.extract(document,requested,pn)
-                    extracted=[row for row in extracted if str(row.get("source_partnumber") or "").strip().upper()==pn]
-                    persisted.extend(self._persist_candidates(pn,extracted))
+                hits=self.search_provider.search(query,domains=layer_domains,limit=8)
+                ingest_hits(list(hits)[:5],layer_domains,source_type)
+                current=evaluate_identity_consensus(pn,persisted)
+                if current.get("decision") in {"PROMOTED","CONFLICT"}:
+                    return
+
+        def tavily_once(query:str)->None:
+            nonlocal fallback_searches_used,search_error
+            if self.fallback_search_provider is None or fallback_searches_used>=self.max_fallback_searches:
+                return
+            normalized=" ".join(str(query or "").split())
+            if not normalized or normalized in fallback_queries:
+                return
+            fallback_queries.append(normalized)
+            fallback_searches_used+=1
+            try:
+                hits=self.fallback_search_provider.search(normalized,domains=all_domains,limit=10)
+            except SearchProviderNotConfigured:
+                search_error="FALLBACK_SEARCH_PROVIDER_NOT_CONFIGURED"
+                return
+            ingest_hits(list(hits)[:10],all_domains,None)
 
         try:
+            # Free discovery first, preserving source trust order.
             research_layer(domains,"MANUFACTURER")
             consensus=evaluate_identity_consensus(pn,persisted)
             if consensus.get("decision") not in {"PROMOTED","CONFLICT"}:
@@ -225,6 +273,21 @@ class ProductIdentityResearchService:
                 consensus=evaluate_identity_consensus(pn,persisted)
             if consensus.get("decision") not in {"PROMOTED","CONFLICT"}:
                 research_layer(_TRUSTED_RETAILER_DOMAINS,"TRUSTED_RETAILER")
+                consensus=evaluate_identity_consensus(pn,persisted)
+
+            # Tavily is a paid-credit fallback. One Basic Search = one credit.
+            # The service hard-caps this block at two calls per PN.
+            if consensus.get("decision") not in {"PROMOTED","CONFLICT"}:
+                candidate=_first_candidate_value(persisted)
+                tavily_once(f'"{pn}" "{candidate}"' if candidate else queries[0])
+                consensus=evaluate_identity_consensus(pn,persisted)
+
+            if consensus.get("decision") not in {"PROMOTED","CONFLICT"} and fallback_searches_used<self.max_fallback_searches:
+                candidate=_first_candidate_value(persisted)
+                confirmation=f'"{pn}" "{candidate}"' if candidate else (queries[1] if len(queries)>1 else f'"{pn}" barcode EAN UPC GTIN')
+                if confirmation in fallback_queries:
+                    confirmation=queries[1] if len(queries)>1 and queries[1] not in fallback_queries else f'"{pn}" EAN UPC GTIN product code'
+                tavily_once(confirmation)
         except SearchProviderNotConfigured:
             search_error="SEARCH_PROVIDER_NOT_CONFIGURED"
 
@@ -249,6 +312,7 @@ class ProductIdentityResearchService:
             "verified_fields":verified,"candidate_fields":_candidate_fields(persisted),
             "promoted_fields":list((promotion.get("promoted") or {}).keys()),"decision":decision,
             "evidence_summary":dict(consensus.get("evidence_summary") or {}),
-            "conflicts":conflicts,"sources_consulted":sources,"search_queries":queries,"error_code":error_code,
+            "conflicts":conflicts,"sources_consulted":sources,"search_queries":queries,
+            "fallback_queries":fallback_queries,"fallback_searches_used":fallback_searches_used,"error_code":error_code,
         }
         self._audit(pn,result);return result
