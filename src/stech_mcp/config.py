@@ -71,6 +71,10 @@ class Settings(BaseSettings):
     # Public research configuration. These fields must be part of Settings so
     # values stored only in .env are available to both MCP and worker processes.
     stech_brave_search_api_key: str = ""
+    # Tavily is used only as the EAN/UPC/GTIN fallback after free Bing discovery.
+    # Basic search = 1 credit; the service hard-caps usage to 2 calls per PN.
+    stech_tavily_api_key: str = Field("", validation_alias=AliasChoices("STECH_TAVILY_API_KEY", "TAVILY_API_KEY"))
+    stech_tavily_max_credits_per_pn: int = Field(default=2, ge=0, le=2, validation_alias="STECH_TAVILY_MAX_CREDITS_PER_PN")
     stech_search_country: str = "PE"
     stech_search_language: str = Field(
         "es",
