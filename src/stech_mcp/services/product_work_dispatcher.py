@@ -37,6 +37,10 @@ class ProductWorkDispatcher:
         if not normalized:
             raise ValueError("work_type is required")
         self._handlers[normalized] = handler
+        for raw_alias in getattr(handler, "aliases", ()) or ():
+            alias = str(raw_alias or "").strip().upper()
+            if alias and alias != normalized:
+                self._handlers[alias] = handler
 
     def dispatch(
         self,

@@ -39,6 +39,16 @@ class ProductWorkRepository:
             out["input"] = raw
         else:
             out["input"] = {}
+        raw_result = out.get("result_json")
+        if isinstance(raw_result, str):
+            try:
+                out["result"] = json.loads(raw_result)
+            except json.JSONDecodeError:
+                out["result"] = None
+        elif isinstance(raw_result, dict):
+            out["result"] = raw_result
+        else:
+            out["result"] = None
         return out
 
     def claim_next(self, worker_id: str, lease_seconds: int = 120) -> dict[str, Any] | None:
@@ -60,7 +70,6 @@ UPDATE i
 SET claimed_by = ?,
     claimed_at = SYSUTCDATETIME(),
     claim_expires_at = DATEADD(SECOND, ?, SYSUTCDATETIME()),
-    attempt_count = attempt_count + 1,
     updated_at = SYSUTCDATETIME()
 OUTPUT
     INSERTED.product_work_item_id,
@@ -128,6 +137,7 @@ WHERE product_work_item_id = ?
         progress_pct: int | None = None,
         error_code: str | None = None,
         error_detail: str | None = None,
+        result: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         target = str(status or "").strip().upper()
         conn = self.connection_factory()
@@ -145,6 +155,7 @@ WHERE product_work_item_id = ?
                 raise ValueError(f"invalid transition: {current} -> {target}")
 
             terminal = target in {"COMPLETED", "PARTIAL", "REVIEW_REQUIRED", "NO_DATA_FOUND", "FAILED", "CANCELLED"}
+            result_payload = json.dumps(result, ensure_ascii=False, separators=(",", ":")) if result is not None else None
             cur.execute(
                 """
 UPDATE dbo.product_work_item
@@ -153,6 +164,7 @@ SET status = ?,
     progress_pct = COALESCE(?, progress_pct),
     last_error_code = ?,
     last_error_detail = ?,
+    result_json = CASE WHEN ? = 1 THEN COALESCE(?, result_json) ELSE result_json END,
     completed_at = CASE WHEN ? = 1 THEN SYSUTCDATETIME() ELSE completed_at END,
     claimed_by = CASE WHEN ? = 1 THEN NULL ELSE claimed_by END,
     claimed_at = CASE WHEN ? = 1 THEN NULL ELSE claimed_at END,
@@ -167,6 +179,7 @@ OUTPUT
     INSERTED.channel_code,
     INSERTED.context_hash,
     INSERTED.input_json,
+    INSERTED.result_json,
     INSERTED.status,
     INSERTED.current_step,
     INSERTED.progress_pct,
@@ -183,6 +196,8 @@ WHERE product_work_item_id = ?;
                 progress_pct,
                 error_code,
                 error_detail,
+                int(terminal),
+                result_payload,
                 int(terminal),
                 int(terminal),
                 int(terminal),

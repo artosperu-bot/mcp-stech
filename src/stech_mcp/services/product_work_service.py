@@ -16,12 +16,22 @@ _TECHNICAL_INPUT_KEYS = {
     "scope",
     "source_context",
 }
+_IDENTITY_INPUT_KEYS = {
+    "partnumber",
+    "requested_fields",
+    "scope",
+    "source_context",
+    "post_actions",
+    "vtex_account_code",
+}
 _CONTEXT_KEYS = (
     "scope",
     "requirements_version",
     "template_code",
     "requested_fields",
     "image_target_count",
+    "post_actions",
+    "vtex_account_code",
 )
 
 
@@ -32,6 +42,18 @@ class ProductWorkService:
             raise ValueError("max_attempts must be between 1 and 10")
         self.repository = repository
         self.max_attempts = normalized_max_attempts
+
+    @staticmethod
+    def _sanitize_identity_post_actions(value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        allowed = {"VTEX_EAN_SYNC"}
+        out: list[str] = []
+        for raw in value:
+            token = str(raw or "").strip().upper()
+            if token in allowed and token not in out:
+                out.append(token)
+        return out
 
     def create_job(
         self,
@@ -57,45 +79,70 @@ class ProductWorkService:
                 continue
             category = str(row.get("category_code") or "").strip().upper() or None
             channel = str(row.get("channel_code") or "").strip().upper() or None
+
+            if normalized_work_type == "RESEARCH_IDENTITY":
+                actions = self._sanitize_identity_post_actions(row.get("post_actions"))
+                if actions:
+                    row["post_actions"] = actions
+                else:
+                    row.pop("post_actions", None)
+                account = str(row.get("vtex_account_code") or "").strip().upper()
+                if account:
+                    row["vtex_account_code"] = account
+                else:
+                    row.pop("vtex_account_code", None)
+
             extra_context = {
                 key: row.get(key)
                 for key in _CONTEXT_KEYS
                 if row.get(key) not in (None, "", [])
             }
+            context_category = None if normalized_work_type == "RESEARCH_IDENTITY" else category
+            context_channel = None if normalized_work_type == "RESEARCH_IDENTITY" else channel
             context_hash = make_context_hash(
                 normalized_work_type,
                 pn,
-                category,
-                channel,
+                context_category,
+                context_channel,
                 context=extra_context or None,
             )
 
-            # Preserve legacy product-level technical deduplication when callers
-            # do not provide an explicit scope/target. New MASTER/CHANNEL jobs use
-            # their intent hash so two different gaps for one PN can coexist.
+            # Identity work remains canonical per selected PN inside a single job.
+            # The context hash still records optional post-actions so separate jobs
+            # can distinguish research-only from research+VTEX workflows.
             contextual = bool(extra_context or channel)
-            dedupe_key = (
-                pn
-                if normalized_work_type == "ENRICH_TECHNICAL" and not contextual
-                else context_hash
-            )
+            if normalized_work_type == "RESEARCH_IDENTITY":
+                dedupe_key = pn
+            elif normalized_work_type == "ENRICH_TECHNICAL" and not contextual:
+                dedupe_key = pn
+            else:
+                dedupe_key = context_hash
             if dedupe_key in seen:
                 continue
             seen.add(dedupe_key)
 
             if normalized_work_type == "ENRICH_TECHNICAL":
                 item = {key: row[key] for key in _TECHNICAL_INPUT_KEYS if key in row}
+            elif normalized_work_type == "RESEARCH_IDENTITY":
+                # Identity work is deliberately isolated from commercial data.
+                # Persist only exact PN, safe identity research context and an
+                # explicitly-whitelisted post action.
+                item = {key: row[key] for key in _IDENTITY_INPUT_KEYS if key in row}
             else:
                 item = dict(row)
             item["partnumber"] = pn
-            if category:
-                item["category_code"] = category
-            elif "category_code" in item:
+            if normalized_work_type == "RESEARCH_IDENTITY":
                 item.pop("category_code", None)
-            if channel:
-                item["channel_code"] = channel
-            elif "channel_code" in item:
                 item.pop("channel_code", None)
+            else:
+                if category:
+                    item["category_code"] = category
+                elif "category_code" in item:
+                    item.pop("category_code", None)
+                if channel:
+                    item["channel_code"] = channel
+                elif "channel_code" in item:
+                    item.pop("channel_code", None)
             item["context_hash"] = context_hash
             items.append(item)
 

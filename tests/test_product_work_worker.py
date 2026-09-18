@@ -165,6 +165,29 @@ def test_progress_callback_renews_lease_before_state_update():
     assert repo.renewals == [(1, "worker-a", 180), (1, "worker-a", 180)]
 
 
+def test_research_identity_alias_executes_through_persistent_worker_without_unsupported_work_type():
+    repo = FakeRepository([_item(1, "PN1", work_type="RESEARCH_IDENTITY")])
+    dispatcher = ProductWorkDispatcher()
+    calls = []
+
+    class IdentityCapableHandler:
+        aliases = ("RESEARCH_IDENTITY",)
+
+        def __call__(self, item, progress):
+            calls.append((item["work_type"], item["partnumber"]))
+            progress("ANALYZING_MISSING_FIELDS", 10)
+            return {"status": "COMPLETED", "current_step": "YA_VERIFICADO"}
+
+    dispatcher.register("ENRICH_TECHNICAL", IdentityCapableHandler())
+    worker = ProductWorkWorker(repo, dispatcher, worker_id="worker-identity", lease_seconds=120)
+
+    assert worker.run_once() is True
+    assert calls == [("RESEARCH_IDENTITY", "PN1")]
+    assert repo.items[1]["status"] == "COMPLETED"
+    assert repo.items[1]["current_step"] == "YA_VERIFICADO"
+    assert repo.items[1]["last_error_code"] is None
+
+
 def test_unknown_work_type_becomes_permanent_failure():
     repo = FakeRepository([_item(1, "PN1", work_type="UNKNOWN")])
     worker = ProductWorkWorker(repo, ProductWorkDispatcher(), worker_id="worker-a")

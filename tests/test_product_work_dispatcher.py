@@ -30,6 +30,31 @@ def test_dispatcher_invokes_registered_handler_and_forwards_progress():
     assert progress_calls == [("ANALYZING_MISSING_FIELDS", 20)]
 
 
+def test_dispatcher_registers_research_identity_alias_without_unsupported_work_type():
+    dispatcher = ProductWorkDispatcher()
+    calls = []
+
+    class Handler:
+        aliases = ("RESEARCH_IDENTITY",)
+
+        def __call__(self, item, progress):
+            progress("ANALYZING_MISSING_FIELDS", 10)
+            calls.append((item["work_type"], item["partnumber"]))
+            return {"status": "COMPLETED", "current_step": "YA_VERIFICADO"}
+
+    dispatcher.register("ENRICH_TECHNICAL", Handler())
+    progress_calls = []
+    result = dispatcher.dispatch(
+        {"work_type": "RESEARCH_IDENTITY", "partnumber": "PN1"},
+        lambda state, pct: progress_calls.append((state, pct)),
+    )
+
+    assert result["status"] == "COMPLETED"
+    assert result["current_step"] == "YA_VERIFICADO"
+    assert calls == [("RESEARCH_IDENTITY", "PN1")]
+    assert progress_calls == [("ANALYZING_MISSING_FIELDS", 10)]
+
+
 def test_dispatcher_rejects_unknown_work_type_without_fallback():
     dispatcher = ProductWorkDispatcher()
     with pytest.raises(UnsupportedWorkTypeError) as exc:

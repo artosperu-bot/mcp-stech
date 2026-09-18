@@ -1,0 +1,278 @@
+from stech_mcp.services.product_identity_research import ProductIdentityResearchService
+from stech_mcp.services.research.search_provider import SearchResult
+
+
+class Products:
+    def __init__(self, product): self.product=product
+    def get_by_partnumber(self, pn): return self.product if pn=="PN1" else None
+
+class Enrichments:
+    def __init__(self, rows=None): self.rows=list(rows or [])
+    def get_approved(self, pn, field_codes=None):
+        wanted=set(field_codes or [])
+        return [r for r in self.rows if not wanted or r.get("field_code") in wanted]
+
+class Search:
+    def __init__(self, results): self.results=list(results); self.calls=[]
+    def search(self, query, domains=(), limit=5):
+        self.calls.append((query, tuple(domains), limit)); return list(self.results)
+
+class LayeredSearch:
+    def __init__(self): self.calls=[]
+    def search(self, query, domains=(), limit=5):
+        domains=tuple(domains)
+        self.calls.append((query, domains, limit))
+        if "deltron.com.pe" in domains:
+            return [SearchResult("Deltron PN1","https://www.deltron.com.pe/product/pn1","PN1 EAN")]
+        return []
+
+class ConsensusSearch:
+    def __init__(self): self.calls=[]
+    def search(self, query, domains=(), limit=5):
+        domains=tuple(domains)
+        self.calls.append((query, domains, limit))
+        if "deltron.com.pe" in domains:
+            return [
+                SearchResult("Deltron PN1","https://www.deltron.com.pe/product/pn1","PN1 EAN"),
+                SearchResult("Ingram PN1","https://pe.ingrammicro.com/product/pn1","PN1 EAN"),
+            ]
+        return []
+
+class Sources:
+    def ingest(self, url, partnumber, source_type):
+        confidence="B" if source_type=="AUTHORIZED_DISTRIBUTOR" else "A1"
+        return {"url":url,"source_type":source_type,"confidence_rank":confidence,"title":"Source","pages":[{"page":1,"text":"PN1 EAN: 4006381333931"}]}
+
+class Extractor:
+    def extract(self, doc, fields, pn):
+        return [{"field_code":"ean","raw_value":"4006381333931","normalized_value":"4006381333931","unit":None,"source_type":doc["source_type"],"source_name":"Source","source_url":doc["url"],"source_partnumber":pn,"evidence_text":"PN1 EAN: 4006381333931","page_number":1,"confidence_rank":doc["confidence_rank"],"status":"PENDING"}]
+
+class Candidates:
+    def __init__(self): self.rows=[]
+    def add(self, **row): self.rows.append(dict(row)); return {"product_fact_candidate_id":len(self.rows),**row}
+
+class Promotion:
+    def __init__(self, enrichments): self.enrichments=enrichments
+    def evaluate_and_promote(self, pn, candidates):
+        winner=candidates[0]
+        self.enrichments.rows.append({"field_code":"ean","value_text":"4006381333931","is_approved":True,"confidence_grade":winner["confidence_rank"]})
+        return {"state":"COMPLETED","promoted":{"ean":"4006381333931"},"conflicts":[]}
+
+class ConflictPromotion:
+    def evaluate_and_promote(self, pn, candidates):
+        return {"state":"REVIEW_REQUIRED","promoted":{},"conflicts":[{"field_code":"ean","reason":"EQUAL_STRENGTH_CONFLICT"}]}
+
+class Audit:
+    def add_audit_event(self, **kwargs): pass
+
+
+def build(
+    product, search_results=None, rows=None, promotion=None, search_provider=None,
+    fallback_search_provider=None, max_fallback_searches=2,
+):
+    enrich=Enrichments(rows)
+    return ProductIdentityResearchService(
+        product_repository=Products(product), enrichment_repository=enrich,
+        candidate_repository=Candidates(), promotion_service=promotion or Promotion(enrich),
+        search_provider=search_provider or Search(search_results or []),
+        fallback_search_provider=fallback_search_provider,
+        max_fallback_searches=max_fallback_searches,
+        source_document_service=Sources(),
+        fact_extractor=Extractor(), audit_repository=Audit(),
+    )
+
+
+def test_existing_valid_ean_skips_web_research_and_reports_already_verified():
+    svc=build({"part_number":"PN1","marca":"LENOVO","ean":"4006381333931"})
+    progress=[]
+    out=svc.research("PN1",progress=lambda state,pct:progress.append((state,pct)))
+    assert out["state"]=="COMPLETED"
+    assert out["result_code"]=="YA_VERIFICADO"
+    assert out["verified_fields"]["ean"]=="4006381333931"
+    assert out["decision"]=="PROMOTED"
+    assert svc.search_provider.calls==[]
+    assert progress==[("ANALYZING_MISSING_FIELDS",10)]
+
+
+def test_missing_ean_uses_only_known_official_brand_domain_and_promotes_exact_pn():
+    svc=build({"part_number":"PN1","marca":"LENOVO","ean":None,"upc":None},[SearchResult("Official","https://support.lenovo.com/pn1","spec")])
+    progress=[]
+    out=svc.research("PN1",progress=lambda state,pct:progress.append((state,pct)))
+    assert out["state"]=="COMPLETED"
+    assert out["result_code"]=="VERIFICADO"
+    assert out["verified_fields"]["ean"]=="4006381333931"
+    assert out["decision"]=="PROMOTED"
+    assert svc.search_provider.calls
+    assert all("lenovo.com" in domains for _,domains,_ in svc.search_provider.calls)
+    assert progress[0]==("ANALYZING_MISSING_FIELDS",10)
+    assert progress[-1]==("REBUILDING_PRODUCT_MASTER",95)
+
+
+def test_laptop_identity_context_drives_secondary_queries_and_keeps_trusted_source_layers():
+    svc=build({
+        "part_number":"PN1",
+        "marca":"LENOVO",
+        "modelo":"IdeaPad Slim 3",
+        "nombre":"Lenovo IdeaPad Slim 3",
+        "ean":None,
+        "upc":None,
+        "atributos_json":{
+            "procesador":"Intel Core i5-13420H",
+            "ram_gb":16,
+            "storage_gb":512,
+            "storage_type":"SSD",
+            "screen_inches":15.6,
+            "color":"Gris",
+        },
+    })
+
+    out=svc.research("PN1")
+    queries=[query for query,_,_ in svc.search_provider.calls]
+    domain_sets=[domains for _,domains,_ in svc.search_provider.calls]
+
+    assert len(set(queries)) <= 2
+    assert queries[0]=='"PN1" "LENOVO" EAN UPC GTIN barcode'
+    assert any('"PN1"' in query and '"IdeaPad Slim 3"' in query and "barcode product code" in query for query in queries)
+    assert all('"Intel Core i5-13420H"' not in query for query in queries)
+    assert any("lenovo.com" in domains for domains in domain_sets)
+    assert any("deltron.com.pe" in domains and "intcomex.com" in domains for domains in domain_sets)
+    assert any("ripley.com.pe" in domains and "falabella.com.pe" in domains for domains in domain_sets)
+    allowed={
+        "lenovo.com","deltron.com.pe","ingrammicro.com","ingrammicro.com.pe","intcomex.com",
+        "ripley.com.pe","falabella.com.pe","coolbox.pe","oechsle.pe","plazavea.com.pe",
+    }
+    assert all(set(domains).issubset(allowed) for domains in domain_sets)
+    assert out["identity_context"]["model"]=="IdeaPad Slim 3"
+    assert out["identity_context"]["ram_gb"]==16
+    assert out["identity_context"]["storage_gb"]==512
+
+
+def test_single_authorized_distributor_fallback_is_candidate_not_verified():
+    search=LayeredSearch()
+    svc=build(
+        {"part_number":"PN1","marca":"LENOVO","ean":None,"upc":None},
+        search_provider=search,
+    )
+
+    out=svc.research("PN1")
+
+    assert out["state"]=="PARTIAL"
+    assert out["result_code"]=="NO_VERIFIED_IDENTITY_FOUND"
+    assert out["decision"]=="CANDIDATE"
+    assert out["candidate_fields"]=={"ean":["4006381333931"]}
+    assert out["verified_fields"]=={}
+    assert "https://www.deltron.com.pe/product/pn1" in out["sources_consulted"]
+    assert any("lenovo.com" in domains for _,domains,_ in search.calls)
+    assert any("deltron.com.pe" in domains for _,domains,_ in search.calls)
+
+
+def test_two_independent_authorized_distributors_agree_and_promote():
+    search=ConsensusSearch()
+    svc=build(
+        {"part_number":"PN1","marca":"LENOVO","ean":None,"upc":None},
+        search_provider=search,
+    )
+
+    out=svc.research("PN1")
+
+    assert out["state"]=="COMPLETED"
+    assert out["result_code"]=="VERIFICADO"
+    assert out["decision"]=="PROMOTED"
+    assert out["verified_fields"]["ean"]=="4006381333931"
+    assert out["evidence_summary"]["strong_source_count"]==2
+    assert out["evidence_summary"]["has_authorized_distributor"] is True
+
+
+def test_off_domain_hit_is_not_treated_as_manufacturer_evidence():
+    svc=build(
+        {"part_number":"PN1","marca":"LENOVO","ean":None,"upc":None},
+        [SearchResult("Marketplace result","https://market.example/pn1","PN1 EAN: 4006381333931")],
+    )
+    out=svc.research("PN1")
+    assert out["state"]=="PARTIAL"
+    assert out["result_code"]=="NO_VERIFIED_IDENTITY_FOUND"
+    assert out["verified_fields"]=={}
+    assert out["sources_consulted"]==[]
+
+
+def test_unknown_brand_does_not_broad_search_or_fake_success():
+    svc=build({"part_number":"PN1","marca":"UNKNOWN","ean":None,"upc":None},[SearchResult("Random","https://market.example/pn1","x")])
+    out=svc.research("PN1")
+    assert out["state"]=="PARTIAL"
+    assert out["result_code"]=="NO_VERIFIED_IDENTITY_FOUND"
+    assert out["error_code"]=="NO_TRUSTED_IDENTITY_SOURCE"
+    assert svc.search_provider.calls==[]
+
+
+def test_conflict_is_review_required_and_never_reported_as_verified():
+    conflict=ConflictPromotion()
+    svc=build(
+        {"part_number":"PN1","marca":"LENOVO","ean":None,"upc":None},
+        [SearchResult("Official","https://support.lenovo.com/pn1","spec")],
+        promotion=conflict,
+    )
+    out=svc.research("PN1")
+    assert out["state"]=="REVIEW_REQUIRED"
+    assert out["result_code"]=="REVIEW_REQUIRED"
+    assert out["error_code"]=="IDENTITY_CONFLICT"
+    assert out["verified_fields"]=={}
+
+
+def test_noisy_bing_result_without_exact_pn_metadata_falls_back_to_tavily():
+    bing=Search([
+        SearchResult("Lenovo Support","https://support.lenovo.com/","generic support page"),
+    ])
+    tavily=Search([
+        SearchResult("Lenovo PN1","https://support.lenovo.com/pn1","PN1 EAN 4006381333931"),
+    ])
+    svc=build(
+        {"part_number":"PN1","marca":"LENOVO","modelo":"V15 G5 IRL","ean":None,"upc":None},
+        search_provider=bing,
+        fallback_search_provider=tavily,
+    )
+
+    out=svc.research("PN1")
+
+    assert out["state"]=="COMPLETED"
+    assert out["decision"]=="PROMOTED"
+    assert out["verified_fields"]["ean"]=="4006381333931"
+    assert out["fallback_searches_used"]==1
+    assert len(tavily.calls)==1
+    assert out["fallback_queries"][0]=='"PN1" "LENOVO" EAN UPC GTIN barcode'
+    assert "https://support.lenovo.com/" not in out["sources_consulted"]
+    assert "https://support.lenovo.com/pn1" in out["sources_consulted"]
+
+
+def test_tavily_fallback_has_hard_two_search_cap_per_partnumber():
+    bing=Search([])
+    tavily=Search([])
+    svc=build(
+        {"part_number":"PN1","marca":"LENOVO","modelo":"V15 G5 IRL","ean":None,"upc":None},
+        search_provider=bing,
+        fallback_search_provider=tavily,
+        max_fallback_searches=2,
+    )
+
+    out=svc.research("PN1")
+
+    assert out["state"]=="PARTIAL"
+    assert out["fallback_searches_used"]==2
+    assert len(tavily.calls)==2
+    assert len(out["fallback_queries"])==2
+
+
+def test_tavily_budget_can_be_disabled_per_partnumber():
+    bing=Search([])
+    tavily=Search([SearchResult("Lenovo PN1","https://support.lenovo.com/pn1","PN1 EAN")])
+    svc=build(
+        {"part_number":"PN1","marca":"LENOVO","ean":None,"upc":None},
+        search_provider=bing,
+        fallback_search_provider=tavily,
+        max_fallback_searches=0,
+    )
+
+    out=svc.research("PN1")
+
+    assert out["state"]=="PARTIAL"
+    assert out["fallback_searches_used"]==0
+    assert tavily.calls==[]

@@ -129,19 +129,17 @@ WHERE product_work_job_id = ?;
 SELECT product_work_item_id, product_work_job_id, work_type, partnumber,
        category_code, channel_code, status, current_step, progress_pct, priority,
        attempt_count, max_attempts, next_attempt_at, claimed_by, claim_expires_at,
-       last_error_code, last_error_detail, created_at, updated_at, completed_at
+       last_error_code, last_error_detail, result_json,
+       created_at, updated_at, completed_at
 FROM dbo.product_work_item
 WHERE product_work_job_id = ?
 ORDER BY product_work_item_id;
 """,
                 int(job_id),
             )
-            rows = [self._row_dict(cur, row) for row in cur.fetchall()]
+            rows = [self._decode_item(self._row_dict(cur, row)) for row in cur.fetchall()]
             job["job_id"] = job["product_work_job_id"]
-            job["items"] = [
-                {**row, "item_id": row["product_work_item_id"]}
-                for row in rows if row is not None
-            ]
+            job["items"] = [row for row in rows if row is not None]
             return job
         finally:
             conn.close()
@@ -180,7 +178,7 @@ UPDATE dbo.product_work_item
 SET status = N'QUEUED', current_step = N'manual retry', progress_pct = 0,
     next_attempt_at = NULL, claimed_by = NULL, claimed_at = NULL,
     claim_expires_at = NULL, last_error_code = NULL, last_error_detail = NULL,
-    completed_at = NULL,
+    result_json = NULL, completed_at = NULL,
     max_attempts = CASE WHEN attempt_count >= max_attempts THEN attempt_count + 1 ELSE max_attempts END,
     updated_at = SYSUTCDATETIME()
 OUTPUT INSERTED.product_work_item_id, INSERTED.partnumber, INSERTED.status
