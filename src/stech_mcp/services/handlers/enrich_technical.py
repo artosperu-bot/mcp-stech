@@ -9,6 +9,7 @@ from stech_mcp.services.identity_barcode_extractor import IdentityBarcodeExtract
 from stech_mcp.services.product_identity_research import ProductIdentityResearchService
 from stech_mcp.services.product_work_dispatcher import RetryableWorkError
 from stech_mcp.services.research.bing_html_search_provider import BingHtmlSearchProvider
+from stech_mcp.services.research.tavily_search_provider import TavilySearchProvider
 
 
 _VTEX_EAN_SYNC_LOCK = threading.Lock()
@@ -24,10 +25,26 @@ class EnrichTechnicalHandler:
         engine: Any,
         vtex_ean_sync_service: Any | None = None,
         identity_search_provider: Any | None = None,
+        identity_fallback_search_provider: Any | None = None,
+        identity_max_fallback_searches: int | None = None,
     ) -> None:
         self.engine = engine
         self.identity_service = None
         self.identity_search_provider = identity_search_provider or BingHtmlSearchProvider()
+
+        from stech_mcp.config import Settings
+        research_settings = Settings()
+        tavily_key = str(research_settings.stech_tavily_api_key or "").strip()
+        self.identity_fallback_search_provider = identity_fallback_search_provider
+        if self.identity_fallback_search_provider is None and tavily_key:
+            self.identity_fallback_search_provider = TavilySearchProvider(api_key=tavily_key)
+        configured_budget = (
+            research_settings.stech_tavily_max_credits_per_pn
+            if identity_max_fallback_searches is None
+            else identity_max_fallback_searches
+        )
+        self.identity_max_fallback_searches = max(0, min(int(configured_budget), 2))
+
         self.vtex_ean_sync_service = vtex_ean_sync_service
         self._vtex_ean_sync_initialized = vtex_ean_sync_service is not None
 
@@ -66,6 +83,8 @@ class EnrichTechnicalHandler:
                 candidate_repository=self.engine.candidate_repository,
                 promotion_service=self.engine.promotion_service,
                 search_provider=self.identity_search_provider,
+                fallback_search_provider=self.identity_fallback_search_provider,
+                max_fallback_searches=self.identity_max_fallback_searches,
                 source_document_service=self.engine.source_document_service,
                 fact_extractor=IdentityBarcodeExtractor(),
                 audit_repository=self.engine.audit_repository,
