@@ -66,7 +66,8 @@ class MarketingProductContextService:
 
     def get(self, partnumber: str) -> dict[str, Any]:
         pn = self._pn(partnumber)
-        product = self.product_repository.get_by_partnumber(pn)
+        distributor_rows = list(self.product_repository.list_by_partnumber(pn, limit=100))
+        product = distributor_rows[0] if distributor_rows else None
         if product is None:
             return {
                 "contract_version": self.CONTRACT_VERSION,
@@ -89,9 +90,18 @@ class MarketingProductContextService:
         except Exception as exc:  # Operational history must not break creative context.
             history_error = f"{type(exc).__name__}: {exc}"
 
+        distributor_snapshots = []
+        for row in distributor_rows:
+            snapshot = self._operational_snapshot(row)
+            snapshot["producto_distribuidor_id"] = row.get("producto_distribuidor_id")
+            snapshot["partnumber"] = row.get("partnumber") or row.get("part_number") or pn
+            distributor_snapshots.append(snapshot)
+
         operational = {
             "source_view": "dbo.V_PRD_PRODUCTO_ACTUAL",
             "current": self._operational_snapshot(product),
+            "distributor_count": len(distributor_snapshots),
+            "distributors": distributor_snapshots,
             "latest_observation": latest_observation,
             "history_error": history_error,
             "selling_price_authoritative": False,
