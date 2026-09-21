@@ -170,17 +170,17 @@ class MarketingProductContextService:
             blockers.append("FACT_CONFLICTS_PRESENT")
 
         image_state = str(image_readiness.get("state") or "").strip().upper()
-        image_count = int(image_readiness.get("image_count") or 0)
-        exact_count = int(image_readiness.get("exact_count") or 0)
-        if image_count <= 0 or image_state == "NO_IMAGES":
-            blockers.append("NO_USABLE_PRODUCT_IMAGES")
-        elif image_state == "REVIEW_REQUIRED":
-            blockers.append("PRODUCT_IMAGES_REQUIRE_REVIEW")
-        elif image_state == "INCOMPLETE":
-            warnings.append("PRODUCT_IMAGES_INCOMPLETE")
-
-        if image_count > 0 and exact_count <= 0:
+        media_manifest = self.media_manifest(pn)
+        reference_count = int(
+            dict(media_manifest.get("product_lock") or {}).get("reference_count") or 0
+        )
+        if reference_count <= 0:
             blockers.append("NO_EXACT_PRODUCT_REFERENCE_IMAGE")
+        elif image_state in {"NO_IMAGES", "REVIEW_REQUIRED", "INCOMPLETE"}:
+            # The master image library may still need housekeeping, but HERMES
+            # can create a draft when an exact/approved reference exists at any
+            # current distributor or in the STECH workspace.
+            warnings.append("PRODUCT_IMAGE_LIBRARY_REVIEW")
 
         if not (product.get("ean") or product.get("upc")):
             warnings.append("GTIN_NOT_AVAILABLE")
