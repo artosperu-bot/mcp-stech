@@ -32,6 +32,7 @@ from stech_mcp.services.channel_gap_analyzer import ChannelGapAnalyzer
 from stech_mcp.services.deltron_fact_adapter import DeltronFactAdapter
 from stech_mcp.services.fact_extractor import FactExtractor
 from stech_mcp.services.fact_promotion import FactPromotionService
+from stech_mcp.services.marketing_context import MarketingProductContextService
 from stech_mcp.services.multichannel_readiness import MultichannelReadinessService
 from stech_mcp.services.product_image_candidate_import import ProductImageCandidateImportService
 from stech_mcp.services.product_image_readiness import ProductImageReadinessService
@@ -44,6 +45,7 @@ from stech_mcp.services.research.brave_image_search_provider import BraveImageSe
 from stech_mcp.services.research.research_planner import ResearchPlanner
 from stech_mcp.services.source_document_service import SourceDocumentService
 from stech_mcp.services.vtex_image_sync_authoritative import VtexImageSyncService
+from stech_mcp.tools.marketing import register_marketing_tools
 from stech_mcp.tools.product_research import register_product_research_tools
 from stech_mcp.tools.product_schema import register_product_schema_tools
 from stech_mcp.tools.product_work import register_product_work_tools
@@ -170,6 +172,20 @@ product_workspace_v2_service = ProductWorkspaceV2Service(
     fact_candidate_repository=fact_candidate_repository,
     work_repository=product_work_query_repository,
     deltron_specification_repository=deltron_specification_repository,
+)
+
+# HERMES marketing integration is deliberately read-only. It composes product
+# truth and approved media references but owns no marketplace or Meta writes.
+marketing_context_service = MarketingProductContextService(
+    product_repository=_server.product_repository,
+    workspace_service=product_workspace_v2_service,
+    source_image_repository=_server.deltron_image_repository,
+    workspace_image_repository=_server.product_image_repository,
+)
+marketing_tools = register_marketing_tools(
+    _server.mcp,
+    context_service=marketing_context_service,
+    namespace=_server,
 )
 
 background_config = BackgroundConfig.from_env()
