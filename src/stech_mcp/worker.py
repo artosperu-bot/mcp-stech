@@ -19,6 +19,7 @@ from stech_mcp.db.product_repository import ProductRepository
 from stech_mcp.db.product_schema_repository import ProductSchemaRepository
 from stech_mcp.db.product_work_execution_repository import ProductWorkExecutionRepository
 from stech_mcp.db.source_document_repository import SourceDocumentRepository
+from stech_mcp.http.source_client import SourceClient
 from stech_mcp.services.deltron_fact_adapter import DeltronFactAdapter
 from stech_mcp.services.fact_extractor import FactExtractor
 from stech_mcp.services.fact_promotion import FactPromotionService
@@ -27,6 +28,7 @@ from stech_mcp.services.handlers.research_images import ResearchImagesHandler
 from stech_mcp.services.local_image_sync import LocalImageSyncService
 from stech_mcp.services.product_enrichment_engine import ProductEnrichmentEngine
 from stech_mcp.services.product_field_verification import ProductFieldVerificationService
+from stech_mcp.services.product_image_candidate_import import ProductImageCandidateImportService
 from stech_mcp.services.product_image_readiness import ProductImageReadinessService
 from stech_mcp.services.product_image_research import ProductImageResearchService
 from stech_mcp.services.product_technical_status import ProductTechnicalStatusService
@@ -359,7 +361,27 @@ def build_worker_from_environment(worker_suffix: str | None = None) -> ProductWo
         candidate_repository=image_candidate_repository,
         search_provider=image_search_provider,
     )
-    image_handler = ResearchImagesHandler(image_research_service)
+    image_candidate_import_service = ProductImageCandidateImportService(
+        root=settings.stech_image_root,
+        candidate_repository=image_candidate_repository,
+        image_repository=product_image_repository,
+        source_client=SourceClient(max_bytes=10 * 1024 * 1024),
+        product_repository=product_repository,
+    )
+    auto_import_exact = os.getenv("STECH_AUTO_IMPORT_EXACT_IMAGES", "false").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
+    trusted_domains = tuple(
+        value.strip().lower()
+        for value in os.getenv("STECH_TRUSTED_IMAGE_DOMAINS", "").split(",")
+        if value.strip()
+    )
+    image_handler = ResearchImagesHandler(
+        image_research_service,
+        candidate_import_service=image_candidate_import_service,
+        auto_import_exact=auto_import_exact,
+        trusted_domains=trusted_domains,
+    )
 
     dispatcher = ProductWorkDispatcher()
     dispatcher.register("ENRICH_TECHNICAL", enrichment_handler)
