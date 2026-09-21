@@ -106,12 +106,22 @@ class WorkspaceImages:
         ]
 
 
-def build(*, workspace=None, products=None):
+class EmptySourceImages:
+    def list_for_product(self, product_id):
+        return []
+
+
+class EmptyWorkspaceImages:
+    def list_images(self, pn):
+        return []
+
+
+def build(*, workspace=None, products=None, source_images=None, workspace_images=None):
     return MarketingProductContextService(
         product_repository=products or Products(),
         workspace_service=workspace or Workspace(),
-        source_image_repository=SourceImages(),
-        workspace_image_repository=WorkspaceImages(),
+        source_image_repository=source_images or SourceImages(),
+        workspace_image_repository=workspace_images or WorkspaceImages(),
     )
 
 
@@ -143,7 +153,19 @@ def test_marketing_readiness_blocks_conflicts_missing_required_and_non_exact_med
     assert result["publication_allowed"] is False
     assert "TECHNICAL_REQUIRED_FIELDS_MISSING" in result["blockers"]
     assert "FACT_CONFLICTS_PRESENT" in result["blockers"]
-    assert "PRODUCT_IMAGES_REQUIRE_REVIEW" in result["blockers"]
+    assert "PRODUCT_IMAGE_LIBRARY_REVIEW" in result["warnings"]
+
+
+
+def test_marketing_readiness_blocks_when_no_exact_or_approved_reference_exists_anywhere():
+    result = build(
+        workspace=Workspace(image_state="NO_IMAGES", exact_count=0),
+        source_images=EmptySourceImages(),
+        workspace_images=EmptyWorkspaceImages(),
+    ).readiness("armor25t")
+
+    assert result["state"] == "BLOCKED"
+    assert result["creative_generation_allowed"] is False
     assert "NO_EXACT_PRODUCT_REFERENCE_IMAGE" in result["blockers"]
 
 
