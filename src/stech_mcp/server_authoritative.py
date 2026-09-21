@@ -23,6 +23,8 @@ from stech_mcp.db.product_work_control_repository import ProductWorkControlRepos
 from stech_mcp.db.product_work_query_repository import ProductWorkQueryRepository
 from stech_mcp.db.source_document_repository import SourceDocumentRepository
 from stech_mcp.http.source_client import SourceClient
+from stech_mcp.excel.excel_writer import ExcelWriter
+from stech_mcp.excel.template_inspector import TemplateInspector
 from stech_mcp.services.budgeted_worker_factory import (
     build_budgeted_background_worker,
     effective_background_worker_count,
@@ -45,6 +47,7 @@ from stech_mcp.services.research.brave_image_search_provider import BraveImageSe
 from stech_mcp.services.research.research_planner import ResearchPlanner
 from stech_mcp.services.source_document_service import SourceDocumentService
 from stech_mcp.services.vtex_image_sync_authoritative import VtexImageSyncService
+from stech_mcp.tools.excel import register_excel_tools
 from stech_mcp.tools.marketing import register_marketing_tools
 from stech_mcp.tools.product_research import register_product_research_tools
 from stech_mcp.tools.product_schema import register_product_schema_tools
@@ -188,6 +191,15 @@ marketing_tools = register_marketing_tools(
     namespace=_server,
 )
 
+excel_template_inspector = TemplateInspector()
+excel_writer = ExcelWriter()
+excel_tools = register_excel_tools(
+    _server.mcp,
+    inspector=excel_template_inspector,
+    writer=excel_writer,
+    namespace=_server,
+)
+
 background_config = BackgroundConfig.from_env()
 product_scanner = ProductScanner(
     product_repository=_server.product_repository,
@@ -237,6 +249,9 @@ maintenance_autofill_scan_now = product_workspace_v2_tools["maintenance_autofill
 maintenance_autofill_pause = product_workspace_v2_tools["maintenance_autofill_pause"]
 maintenance_autofill_resume = product_workspace_v2_tools["maintenance_autofill_resume"]
 maintenance_autofill_jobs = product_workspace_v2_tools["maintenance_autofill_jobs"]
+product_workspace_smart_complete = product_workspace_v2_tools["product_workspace_smart_complete"]
+excel_template_inspect = excel_tools["excel_template_inspect"]
+excel_write_copy = excel_tools["excel_write_copy"]
 
 
 def main() -> None:
