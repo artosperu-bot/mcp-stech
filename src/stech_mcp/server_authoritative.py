@@ -224,6 +224,14 @@ product_workspace_v2_tools = register_product_workspace_v2_tools(
 mcp = _server.mcp
 settings = _server.settings
 
+# Public runtime aliases used by smoke tests and external HERMES integrations.
+# Tool registration stores the callable on the legacy shared server namespace;
+# re-export them here so `server_authoritative` is the single authoritative API.
+stech_health = _server.stech_health
+marketing_product_context = marketing_tools["marketing_product_context"]
+marketing_readiness = marketing_tools["marketing_readiness"]
+marketing_media_manifest = marketing_tools["marketing_media_manifest"]
+
 
 def main() -> None:
     # Start only from the official executable entry point, never at import time.
