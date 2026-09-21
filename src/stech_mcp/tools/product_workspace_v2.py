@@ -108,6 +108,37 @@ def register_product_workspace_v2_tools(
         return work_service.cancel_item(int(item_id))
 
     @mcp.tool()
+    def maintenance_autofill_status(limit: int = 50) -> dict[str, Any]:
+        bounded = max(1, min(int(limit), 200))
+        jobs = list(work_service.list_jobs(limit=bounded))
+        counts = Counter(str(row.get("status") or "UNKNOWN").upper() for row in jobs)
+        return {
+            "runtime": runtime.status(),
+            "job_count": len(jobs),
+            "jobs_by_status": dict(counts),
+            "jobs": jobs,
+        }
+
+    @mcp.tool()
+    def maintenance_autofill_scan_now() -> dict[str, Any]:
+        return runtime.scan_now()
+
+    @mcp.tool()
+    def maintenance_autofill_pause() -> dict[str, Any]:
+        return runtime.pause()
+
+    @mcp.tool()
+    def maintenance_autofill_resume() -> dict[str, Any]:
+        return runtime.resume()
+
+    @mcp.tool()
+    def maintenance_autofill_jobs(limit: int = 100) -> dict[str, Any]:
+        bounded = max(1, min(int(limit), 200))
+        rows = list(work_service.list_jobs(limit=bounded))
+        counts = Counter(str(row.get("status") or "UNKNOWN").upper() for row in rows)
+        return {"count": len(rows), "by_status": dict(counts), "jobs": rows}
+
+    @mcp.tool()
     def product_images_readiness(
         partnumber: str,
         category_code: str | None = None,
@@ -261,6 +292,11 @@ def register_product_workspace_v2_tools(
         "background_job_get": background_job_get,
         "background_job_retry": background_job_retry,
         "background_job_cancel": background_job_cancel,
+        "maintenance_autofill_status": maintenance_autofill_status,
+        "maintenance_autofill_scan_now": maintenance_autofill_scan_now,
+        "maintenance_autofill_pause": maintenance_autofill_pause,
+        "maintenance_autofill_resume": maintenance_autofill_resume,
+        "maintenance_autofill_jobs": maintenance_autofill_jobs,
         "product_images_readiness": product_images_readiness,
         "product_images_research": product_images_research,
         "product_images_research_batch": product_images_research_batch,
