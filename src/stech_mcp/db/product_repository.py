@@ -118,22 +118,40 @@ ORDER BY ultima_observacion DESC, producto_distribuidor_id DESC"""
         after_partnumber: str = "",
         limit: int = 100,
     ) -> list[dict[str, Any]]:
-        """Page the canonical product view in stable Part Number order for background scans."""
+        """Page by unique Part Number and include all current distributor rows.
+
+        Paging raw distributor rows can split one PN across page boundaries and
+        skip remaining distributors when the next cursor uses `part_number > ?`.
+        This query first selects the next N unique PNs, then returns every row
+        for those products.
+        """
         after = str(after_partnumber or "").strip().upper()
         bounded = max(1, min(int(limit), 500))
         connection = self._connection_factory()
         try:
             cursor = connection.cursor()
             if after:
-                sql = f"""SELECT TOP ({bounded}) *
-FROM {self._view_name}
-WHERE part_number > ?
-ORDER BY part_number"""
+                sql = f"""WITH page_pn AS (
+    SELECT DISTINCT TOP ({bounded}) part_number
+    FROM {self._view_name}
+    WHERE part_number > ?
+    ORDER BY part_number
+)
+SELECT src.*
+FROM {self._view_name} AS src
+INNER JOIN page_pn AS p ON p.part_number = src.part_number
+ORDER BY src.part_number, src.ultima_observacion DESC, src.producto_distribuidor_id DESC"""
                 cursor.execute(sql, after)
             else:
-                sql = f"""SELECT TOP ({bounded}) *
-FROM {self._view_name}
-ORDER BY part_number"""
+                sql = f"""WITH page_pn AS (
+    SELECT DISTINCT TOP ({bounded}) part_number
+    FROM {self._view_name}
+    ORDER BY part_number
+)
+SELECT src.*
+FROM {self._view_name} AS src
+INNER JOIN page_pn AS p ON p.part_number = src.part_number
+ORDER BY src.part_number, src.ultima_observacion DESC, src.producto_distribuidor_id DESC"""
                 cursor.execute(sql)
             return [self._row_to_dict(cursor, row) for row in cursor.fetchall()]
         finally:
