@@ -1,9 +1,36 @@
 from __future__ import annotations
 
 from collections import Counter
+import re
 from typing import Any
 
 from stech_mcp.tools.core import set_health_extra_provider
+
+
+_IDENTITY_FIELDS = {
+    "ean", "upc", "gtin", "gtin_8", "gtin_12", "gtin_13", "gtin_14",
+    "barcode", "codigo_barras", "codigo_de_barras",
+}
+
+
+def _field_key(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    text = re.sub(r"#\s*\d+\s*$", "", text).strip()
+    text = (
+        text.replace("á", "a").replace("é", "e").replace("í", "i")
+        .replace("ó", "o").replace("ú", "u").replace("ñ", "n")
+    )
+    return re.sub(r"[^a-z0-9]+", "_", text).strip("_")
+
+
+def _has_value(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, tuple, set, dict)):
+        return bool(value)
+    return True
 
 
 def register_product_workspace_v2_tools(
@@ -179,6 +206,152 @@ def register_product_workspace_v2_tools(
         )
 
     @mcp.tool()
+    def product_workspace_smart_complete(
+        partnumbers: list[str],
+        requested_fields: list[str] | None = None,
+        image_target_count: int | None = None,
+        category_code: str | None = None,
+        channel_code: str | None = None,
+        template_code: str | None = None,
+        requirements_version: str | None = None,
+        source_name: str = "HERMES_SMART_COMPLETE",
+    ) -> dict[str, Any]:
+        """Queue only unresolved technical/image work for the requested output.
+
+        requested_fields should be canonical Product Workspace field names. Identity
+        gaps are reported for review until the identity worker is wired into this
+        authoritative branch.
+        """
+        pns = _partnumbers(partnumbers)
+        category = str(category_code or "").strip().upper() or None
+        channel = str(channel_code or "").strip().upper() or None
+        template = str(template_code or "").strip() or None
+        version = str(requirements_version or "").strip() or None
+        source = str(source_name or "").strip() or "HERMES_SMART_COMPLETE"
+        target = None if image_target_count in (None, "") else max(0, min(int(image_target_count), 20))
+
+        requested: list[tuple[str, str]] = []
+        seen_fields: set[str] = set()
+        for raw in list(requested_fields or []):
+            label = str(raw or "").strip()
+            key = _field_key(label)
+            if not key or key in seen_fields:
+                continue
+            seen_fields.add(key)
+            requested.append((label, key))
+
+        technical_rows: list[dict[str, Any]] = []
+        image_rows: list[dict[str, Any]] = []
+        items: list[dict[str, Any]] = []
+
+        for pn in pns:
+            workspace = workspace_service.get(pn) if workspace_service is not None else {
+                "found": False,
+                "partnumber": pn,
+            }
+            master = dict(workspace.get("master") or {})
+            technical = dict(workspace.get("technical") or {})
+            known = dict(technical.get("known_fields") or {})
+
+            normalized_known: dict[str, Any] = {}
+            for key, value in {**master, **known}.items():
+                normalized_known[_field_key(key)] = value
+
+            generic_identity = next(
+                (
+                    normalized_known[key]
+                    for key in ("ean", "upc", "gtin", "barcode")
+                    if _has_value(normalized_known.get(key))
+                ),
+                None,
+            )
+            if _has_value(generic_identity):
+                for key in ("gtin", "barcode", "codigo_barras", "codigo_de_barras"):
+                    normalized_known.setdefault(key, generic_identity)
+
+            missing_pairs = [
+                (label, key) for label, key in requested
+                if not _has_value(normalized_known.get(key))
+            ]
+            identity_missing = [label for label, key in missing_pairs if key in _IDENTITY_FIELDS]
+            technical_missing = [label for label, key in missing_pairs if key not in _IDENTITY_FIELDS]
+
+            image_state = image_readiness_service.get(
+                pn,
+                category_code=category,
+                channel_code=channel or "MASTER",
+            )
+            current_images = int(image_state.get("image_count") or 0)
+            effective_target = current_images if target is None else target
+            image_missing = max(0, effective_target - current_images)
+
+            context: dict[str, Any] = {"partnumber": pn, "scope": "TEMPLATE_SMART_COMPLETE"}
+            if category:
+                context["category_code"] = category
+            if channel:
+                context["channel_code"] = channel
+            if template:
+                context["template_code"] = template
+            if version:
+                context["requirements_version"] = version
+
+            if technical_missing:
+                technical_rows.append({**context, "requested_fields": technical_missing})
+            if image_missing > 0:
+                image_rows.append({**context, "image_target_count": effective_target})
+
+            if technical_missing or image_missing:
+                state = "PROCESSING"
+            elif identity_missing:
+                state = "REVIEW"
+            else:
+                state = "READY"
+
+            items.append({
+                "partnumber": pn,
+                "found": bool(workspace.get("found")),
+                "state": state,
+                "requested_fields": len(requested),
+                "resolved_fields": len(requested) - len(missing_pairs),
+                "missing_fields": [label for label, _ in missing_pairs],
+                "identity_review_fields": identity_missing,
+                "images": {
+                    "current": current_images,
+                    "target": effective_target,
+                    "missing": image_missing,
+                },
+            })
+
+        jobs: dict[str, Any] = {}
+        if technical_rows:
+            jobs["technical"] = work_service.create_job(
+                rows=technical_rows,
+                work_type="ENRICH_TECHNICAL",
+                source_name=source,
+                actor_source="HERMES",
+                priority=90,
+            )
+        if image_rows:
+            jobs["images"] = work_service.create_job(
+                rows=image_rows,
+                work_type="RESEARCH_IMAGES",
+                source_name=source,
+                actor_source="HERMES",
+                priority=90,
+            )
+
+        return {
+            "requested_count": len(pns),
+            "ready_count": sum(1 for row in items if row["state"] == "READY"),
+            "review_count": sum(1 for row in items if row["state"] == "REVIEW"),
+            "processing_count": sum(1 for row in items if row["state"] == "PROCESSING"),
+            "requested_field_count": len(requested),
+            "image_target_count": target,
+            "jobs": jobs,
+            "items": items,
+        }
+
+    @mcp.tool()
     def product_image_candidates(partnumber: str) -> dict[str, Any]:
         pn = str(partnumber or "").strip().upper()
         if not pn:
@@ -300,6 +473,7 @@ def register_product_workspace_v2_tools(
         "product_images_readiness": product_images_readiness,
         "product_images_research": product_images_research,
         "product_images_research_batch": product_images_research_batch,
+        "product_workspace_smart_complete": product_workspace_smart_complete,
         "product_image_candidates": product_image_candidates,
         "product_image_candidate_import": product_image_candidate_import,
         "product_image_candidate_reject": product_image_candidate_reject,
