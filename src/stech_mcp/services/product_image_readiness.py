@@ -67,17 +67,31 @@ class ProductImageReadinessService:
         pn = str(partnumber or "").strip().upper()
         if not pn:
             raise ValueError("partnumber is required")
-        product = self.product_repository.get_by_partnumber(pn)
-        if product is None:
+        list_by_pn = getattr(self.product_repository, "list_by_partnumber", None)
+        if callable(list_by_pn):
+            products = list(list_by_pn(pn, limit=100))
+        else:
+            product = self.product_repository.get_by_partnumber(pn)
+            products = [product] if product is not None else []
+        if not products:
             raise LookupError(f"product not found: {pn}")
 
-        source_id = product.get("producto_distribuidor_id")
         source_images: list[dict[str, Any]] = []
-        if source_id is not None:
-            source_images = [
-                self._normalize_source(pn, row)
-                for row in self.source_image_repository.list_for_product(int(source_id))
-            ]
+        seen_source_ids: set[int] = set()
+        for product in products:
+            source_id = product.get("producto_distribuidor_id")
+            if source_id in (None, ""):
+                continue
+            source_id_int = int(source_id)
+            if source_id_int in seen_source_ids:
+                continue
+            seen_source_ids.add(source_id_int)
+            distributor = product.get("distribuidor") or product.get("distributor")
+            for row in self.source_image_repository.list_for_product(source_id_int):
+                image = self._normalize_source(pn, row)
+                image["producto_distribuidor_id"] = source_id_int
+                image["distributor"] = distributor
+                source_images.append(image)
         workspace_images = list(self.workspace_image_repository.list_images(pn))
         images = [*source_images, *workspace_images]
         policy = self._policy(channel_code, category_code)
