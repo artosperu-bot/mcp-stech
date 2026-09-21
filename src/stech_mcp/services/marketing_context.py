@@ -213,9 +213,17 @@ class MarketingProductContextService:
             }
 
         source_images: list[dict[str, Any]] = []
-        product_id = product.get("producto_distribuidor_id")
-        if product_id not in (None, ""):
-            for row in self.source_image_repository.list_for_product(int(product_id)):
+        distributor_rows = list(self.product_repository.list_by_partnumber(pn, limit=100))
+        seen_source_ids: set[int] = set()
+        for distributor_row in distributor_rows:
+            product_id = distributor_row.get("producto_distribuidor_id")
+            if product_id in (None, ""):
+                continue
+            product_id_int = int(product_id)
+            if product_id_int in seen_source_ids:
+                continue
+            seen_source_ids.add(product_id_int)
+            for row in self.source_image_repository.list_for_product(product_id_int):
                 item = dict(row)
                 snapshot = str(item.get("part_number_snapshot") or "").strip().upper()
                 exact = bool(snapshot and snapshot == pn)
@@ -223,7 +231,9 @@ class MarketingProductContextService:
                 source_url = str(item.get("url_origen") or "").strip()
                 item.update(
                     {
-                        "media_source": "DELTRON_DB",
+                        "media_source": "DISTRIBUTOR_DB",
+                        "producto_distribuidor_id": product_id_int,
+                        "distributor": distributor_row.get("distribuidor") or distributor_row.get("distributor"),
                         "partnumber_match": "EXACT" if exact else ("MISMATCH" if snapshot else "UNKNOWN"),
                         "eligible_reference": bool(exact and source_url and not deleted),
                     }
