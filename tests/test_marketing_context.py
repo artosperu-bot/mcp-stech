@@ -5,17 +5,35 @@ class Products:
     def __init__(self, *, history_error=False):
         self.history_error = history_error
 
+    def list_by_partnumber(self, pn, limit=100):
+        return [
+            {
+                "part_number": pn,
+                "producto_distribuidor_id": 11,
+                "distribuidor": "DELTRON",
+                "marca": "ULEFONE",
+                "nombre": "Armor 25T Pro",
+                "ean": "1234567890123",
+                "stock_valor": 7,
+                "precio_actual_usd": 299,
+                "ultima_observacion": "2026-09-21T10:00:00",
+            },
+            {
+                "part_number": pn,
+                "producto_distribuidor_id": 12,
+                "distribuidor": "INGRAM",
+                "marca": "ULEFONE",
+                "nombre": "Armor 25T Pro",
+                "ean": "1234567890123",
+                "stock_valor": 4,
+                "precio_actual_usd": 305,
+                "ultima_observacion": "2026-09-21T09:55:00",
+            },
+        ][:limit]
+
     def get_by_partnumber(self, pn):
-        return {
-            "part_number": pn,
-            "producto_distribuidor_id": 11,
-            "marca": "ULEFONE",
-            "nombre": "Armor 25T Pro",
-            "ean": "1234567890123",
-            "stock_valor": 7,
-            "precio_actual_usd": 299,
-            "ultima_observacion": "2026-09-21T10:00:00",
-        }
+        rows = self.list_by_partnumber(pn, limit=1)
+        return rows[0] if rows else None
 
     def history(self, pn, limit=1):
         if self.history_error:
@@ -57,14 +75,23 @@ class Workspace:
 
 class SourceImages:
     def list_for_product(self, product_id):
-        assert product_id == 11
-        return [
-            {
-                "part_number_snapshot": "ARMOR25T",
-                "url_origen": "https://example.test/armor.jpg",
-                "orden_imagen": 1,
-            }
-        ]
+        if product_id == 11:
+            return [
+                {
+                    "part_number_snapshot": "ARMOR25T",
+                    "url_origen": "https://example.test/armor-deltron.jpg",
+                    "orden_imagen": 1,
+                }
+            ]
+        if product_id == 12:
+            return [
+                {
+                    "part_number_snapshot": "ARMOR25T",
+                    "url_origen": "https://example.test/armor-ingram.jpg",
+                    "orden_imagen": 1,
+                }
+            ]
+        return []
 
 
 class WorkspaceImages:
@@ -94,6 +121,8 @@ def test_marketing_context_is_read_only_and_does_not_promote_source_price_to_sel
     assert result["found"] is True
     assert result["partnumber"] == "ARMOR25T"
     assert result["operational"]["current"]["precio_actual_usd"] == 299
+    assert result["operational"]["distributor_count"] == 2
+    assert [row["distribuidor"] for row in result["operational"]["distributors"]] == ["DELTRON", "INGRAM"]
     assert result["operational"]["selling_price_authoritative"] is False
     assert result["safety"]["read_only"] is True
     assert result["safety"]["meta_write_authority"] is False
@@ -124,8 +153,9 @@ def test_media_manifest_enables_product_lock_when_an_approved_reference_exists()
     assert result["found"] is True
     assert result["product_lock"]["enabled"] is True
     assert result["product_lock"]["policy"] == "PRESERVE_PRODUCT_IDENTITY"
-    assert result["product_lock"]["reference_count"] == 1
-    assert result["references"][0]["media_source"] == "STECH_WORKSPACE"
+    assert result["product_lock"]["reference_count"] == 3
+    assert {row["media_source"] for row in result["references"]} == {"DISTRIBUTOR_DB", "STECH_WORKSPACE"}
+    assert {row.get("distributor") for row in result["source_images"]} == {"DELTRON", "INGRAM"}
 
 
 def test_history_failure_does_not_break_marketing_context():
