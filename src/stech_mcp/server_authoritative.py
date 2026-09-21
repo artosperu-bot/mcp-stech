@@ -231,6 +231,12 @@ stech_health = _server.stech_health
 marketing_product_context = marketing_tools["marketing_product_context"]
 marketing_readiness = marketing_tools["marketing_readiness"]
 marketing_media_manifest = marketing_tools["marketing_media_manifest"]
+background_jobs_summary = product_workspace_v2_tools["background_jobs_summary"]
+maintenance_autofill_status = product_workspace_v2_tools["maintenance_autofill_status"]
+maintenance_autofill_scan_now = product_workspace_v2_tools["maintenance_autofill_scan_now"]
+maintenance_autofill_pause = product_workspace_v2_tools["maintenance_autofill_pause"]
+maintenance_autofill_resume = product_workspace_v2_tools["maintenance_autofill_resume"]
+maintenance_autofill_jobs = product_workspace_v2_tools["maintenance_autofill_jobs"]
 
 
 def main() -> None:
