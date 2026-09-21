@@ -119,11 +119,28 @@ class ProductTechnicalStatusService:
         if not normalized_pn:
             raise ValueError("partnumber is required")
 
-        product = self.product_repository.get_by_partnumber(normalized_pn)
-        if product is None:
+        list_by_pn = getattr(self.product_repository, "list_by_partnumber", None)
+        if callable(list_by_pn):
+            products = list(list_by_pn(normalized_pn, limit=100))
+        else:
+            product = self.product_repository.get_by_partnumber(normalized_pn)
+            products = [product] if product is not None else []
+        if not products:
             raise LookupError(f"product not found: {normalized_pn}")
 
-        category_code = _resolve_category(product)
+        product = products[0]
+        category_code: str | None = None
+        category_error: Exception | None = None
+        for candidate_product in products:
+            try:
+                category_code = _resolve_category(candidate_product)
+                product = candidate_product
+                break
+            except LookupError as exc:
+                category_error = exc
+        if category_code is None:
+            raise LookupError(str(category_error or "supported technical category could not be resolved"))
+
         schema = self.schema_repository.get_category_schema(category_code)
         if not schema:
             raise LookupError(f"technical schema not found: {category_code}")
@@ -132,24 +149,35 @@ class ProductTechnicalStatusService:
         known_fields: dict[str, Any] = {}
         field_sources: dict[str, str] = {}
 
-        # Only already-canonical product columns are accepted. The legacy
-        # atributos_json payload is deliberately ignored.
+        # Only already-canonical product columns are accepted. Prefer the first
+        # non-empty value in current-source order, but inspect every distributor
+        # row for the PN. The legacy atributos_json payload is deliberately ignored.
         for field_code in schema_fields:
-            value = product.get(field_code)
-            if _has_value(value):
-                known_fields[field_code] = value
-                field_sources[field_code] = "PRODUCT"
+            for source_product in products:
+                value = source_product.get(field_code)
+                if _has_value(value):
+                    known_fields[field_code] = value
+                    field_sources[field_code] = (
+                        "PRODUCT:" + str(
+                            source_product.get("distribuidor")
+                            or source_product.get("distributor")
+                            or "UNKNOWN"
+                        )
+                    )
+                    break
 
-        # Deltron technical truth comes from PRD_DELTRON_ESPECIFICACION and
-        # overrides generic/direct product fields for the exact distributor PN.
-        for candidate in self._deltron_candidates(product, category_code):
-            field_code = normalize_field_code(candidate.get("field_code"))
-            if field_code not in schema_fields:
-                continue
-            value = candidate.get("normalized_value")
-            if _has_value(value):
-                known_fields[field_code] = value
-                field_sources[field_code] = "DELTRON"
+        # Structured Deltron truth is discovered across all current distributor
+        # rows. This prevents a newer Ingram/other observation from hiding an
+        # available Deltron specification record for the same exact PN.
+        for source_product in products:
+            for candidate in self._deltron_candidates(source_product, category_code):
+                field_code = normalize_field_code(candidate.get("field_code"))
+                if field_code not in schema_fields:
+                    continue
+                value = candidate.get("normalized_value")
+                if _has_value(value):
+                    known_fields[field_code] = value
+                    field_sources[field_code] = "DELTRON"
 
         # Approved enrichment may refine generic product data or fill gaps, but
         # it never replaces a structured Deltron field for the exact PN.
@@ -184,4 +212,5 @@ class ProductTechnicalStatusService:
             "missing_recommended": missing_recommended,
             "conflicts": [],
             "completion_pct": completion_pct,
+            "distributor_count": len(products),
         }
