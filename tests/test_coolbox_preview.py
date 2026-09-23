@@ -43,11 +43,9 @@ def _product():
 
 def test_preview_uses_exact_coolbox_columns_and_deltron_values():
     preview = build_coolbox_preview(_product())
-
     assert preview["template"] == "Laptops-All in one"
     assert preview["field_count"] == 81
     fields = {row["field"]: row for row in preview["fields"]}
-
     assert fields["Sku code reference\n(Max. hasta 15 caracteres)"]["value"] == "82YU00XYLM"
     assert fields["Modelo"]["value"] == "V15 G4 AMN"
     assert fields["Marca"]["value"] == "LENOVO"
@@ -64,17 +62,32 @@ def test_preview_uses_exact_coolbox_columns_and_deltron_values():
 def test_preview_never_invents_missing_config_sensitive_specs():
     preview = build_coolbox_preview(_product())
     fields = {row["field"]: row for row in preview["fields"]}
-
     assert fields["Capacidad de disco sólido (SSD)"]["value"] is None
     assert fields["Capacidad de disco sólido (SSD)"]["status"] == "RESEARCH_REQUIRED"
     assert fields["Tasa de refresco laptop"]["value"] is None
     assert fields["Procesador gráfico"]["value"] is None
 
 
+def test_preview_does_not_block_on_columns_left_blank_by_real_completed_coolbox_laptop_rows():
+    preview = build_coolbox_preview(_product())
+    fields = {row["field"]: row for row in preview["fields"]}
+    optional_when_unknown = (
+        "Memoria unificada",
+        "Sistema de refrigeración",
+        "Duración de la batería",
+        "Capacidad de disco eMMC ",
+        "Consumo",
+        "Tipo de enchufe",
+    )
+    for name in optional_when_unknown:
+        assert fields[name]["value"] is None
+        assert fields[name]["status"] == "OPTIONAL"
+        assert name not in preview["ready_for_research"]
+
+
 def test_preview_uses_approved_15_x_packaging_fallback():
     preview = build_coolbox_preview(_product())
     fields = {row["field"]: row for row in preview["fields"]}
-
     assert fields["Alto (cm)"]["value"] == 7
     assert fields["Ancho (cm)"]["value"] == 33
     assert fields["Largo  (cm)"]["value"] == 54
@@ -84,6 +97,26 @@ def test_preview_uses_approved_15_x_packaging_fallback():
         assert fields[field_name]["method"] == "ESTIMATED"
         assert fields[field_name]["source"] == "REGLA_STECH_EMPAQUE"
         assert "LAPTOP_15_X_DEFAULT" in (fields[field_name]["note"] or "")
+
+
+def test_preview_compacts_db_decimal_package_numbers_for_output():
+    package = {
+        "width_cm": Decimal("33.00"),
+        "length_cm": Decimal("54.00"),
+        "height_cm": Decimal("7.00"),
+        "weight_g": 2500,
+        "status": "ESTIMATED",
+        "method": "ESTIMATED",
+        "source": "REGLA_STECH_EMPAQUE",
+        "rule_code": "LAPTOP_15_X_DEFAULT",
+        "confidence_grade": "E",
+    }
+    preview = build_coolbox_preview(_product(), package=package)
+    fields = {row["field"]: row for row in preview["fields"]}
+    assert fields["Ancho (cm)"]["value"] == 33
+    assert isinstance(fields["Ancho (cm)"]["value"], int)
+    assert fields["Largo  (cm)"]["value"] == 54
+    assert fields["Alto (cm)"]["value"] == 7
 
 
 def test_preview_prefers_resolved_official_package_over_fallback():
@@ -98,15 +131,32 @@ def test_preview_prefers_resolved_official_package_over_fallback():
         "rule_code": None,
         "confidence_grade": "A1",
     }
-
     preview = build_coolbox_preview(_product(), package=package)
     fields = {row["field"]: row for row in preview["fields"]}
-
-    assert fields["Alto (cm)"]["value"] == Decimal("7.2")
-    assert fields["Ancho (cm)"]["value"] == Decimal("31.0")
-    assert fields["Largo  (cm)"]["value"] == Decimal("50.5")
+    assert fields["Alto (cm)"]["value"] == 7.2
+    assert fields["Ancho (cm)"]["value"] == 31
+    assert isinstance(fields["Ancho (cm)"]["value"], int)
+    assert fields["Largo  (cm)"]["value"] == 50.5
     assert fields["Peso (g)"]["value"] == 2180
     for field_name in ("Alto (cm)", "Ancho (cm)", "Largo  (cm)", "Peso (g)"):
         assert fields[field_name]["status"] == "VERIFIED"
         assert fields[field_name]["method"] == "VERIFIED"
         assert fields[field_name]["source"] == "Lenovo PSREF exact PN"
+
+
+def test_preview_overlays_approved_verified_enrichments_over_deltron_and_missing_fields():
+    enrichments = [
+        {"field_code": "ssd_capacity_gb", "value_number": Decimal("512.000000"), "method": "VERIFIED", "confidence_grade": "A1"},
+        {"field_code": "memory_detail", "value_text": "16GB Soldered LPDDR5-5500", "method": "VERIFIED", "confidence_grade": "A1"},
+        {"field_code": "gpu_model", "value_text": "AMD Radeon 610M", "method": "VERIFIED", "confidence_grade": "A1"},
+        {"field_code": "fingerprint_reader", "value_text": "No", "method": "VERIFIED", "confidence_grade": "A1"},
+    ]
+    preview = build_coolbox_preview(_product(), enrichments=enrichments)
+    fields = {row["field"]: row for row in preview["fields"]}
+    assert fields["Capacidad de disco sólido (SSD)"]["value"] == "512 GB"
+    assert fields["Detalle de memoria RAM"]["value"] == "16GB Soldered LPDDR5-5500"
+    assert fields["Procesador gráfico"]["value"] == "AMD Radeon 610M"
+    assert fields["Lector de huellas"]["value"] == "No"
+    for field_name in ("Capacidad de disco sólido (SSD)", "Detalle de memoria RAM", "Procesador gráfico", "Lector de huellas"):
+        assert fields[field_name]["status"] == "VERIFIED"
+        assert fields[field_name]["source"] == "STECH_MCP.product_enrichment [A1]"
