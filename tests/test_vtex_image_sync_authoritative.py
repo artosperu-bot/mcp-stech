@@ -143,7 +143,7 @@ class FakeVtexClient:
         self.token_calls = 0
 
     def resolve_sku_id(self, ref_id: str):
-        assert ref_id == f"{PARTNUMBER}-S"
+        assert ref_id == f"{PARTNUMBER}-ST"
         return 251
 
     def get_sku_context(self, sku_id: int):

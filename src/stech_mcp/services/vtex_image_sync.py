@@ -128,14 +128,24 @@ def _seller_skus(product: dict[str, Any]) -> list[dict[str, Any]]:
     return [row for row in rows if isinstance(row, dict)]
 
 
+def _sku_ref_candidates(partnumber: str) -> tuple[str, str]:
+    normalized = _normalize_partnumber(partnumber)
+    return f"{normalized}-ST", f"{normalized}-S"
+
+
 def _find_target_sku(product: dict[str, Any], partnumber: str) -> dict[str, Any] | None:
     normalized = _normalize_partnumber(partnumber)
-    requested_ref = f"{normalized}-S"
+    requested_refs = _sku_ref_candidates(normalized)
     skus = _seller_skus(product)
 
-    exact_ref = [row for row in skus if _normalize_partnumber(row.get("externalId")) == requested_ref]
-    if len(exact_ref) == 1:
-        return exact_ref[0]
+    for requested_ref in requested_refs:
+        exact_ref = [
+            row
+            for row in skus
+            if _normalize_partnumber(row.get("externalId")) == requested_ref
+        ]
+        if len(exact_ref) == 1:
+            return exact_ref[0]
 
     exact_manufacturer = [
         row for row in skus if _normalize_partnumber(row.get("manufacturerCode")) == normalized
@@ -407,9 +417,24 @@ class VtexImageSyncService:
 
     def _read_seller_product(self, partnumber: str) -> tuple[dict[str, Any], dict[str, Any], int]:
         normalized = _normalize_partnumber(partnumber)
-        sku_ref_id = f"{normalized}-S"
-        sku_id = int(self.vtex_client.resolve_sku_id(sku_ref_id))
-        if sku_id <= 0:
+        sku_id: int | None = None
+        last_resolve_error: VtexImageApiError | None = None
+        for sku_ref_id in _sku_ref_candidates(normalized):
+            try:
+                candidate = int(self.vtex_client.resolve_sku_id(sku_ref_id))
+            except VtexImageApiError as exc:
+                # Current Coolbox contract is PN-ST. PN-S remains read-only
+                # compatibility for products created before the contract fix.
+                if exc.status in {200, 404}:
+                    last_resolve_error = exc
+                    continue
+                raise
+            if candidate > 0:
+                sku_id = candidate
+                break
+        if sku_id is None:
+            if last_resolve_error is not None:
+                raise last_resolve_error
             raise LookupError("catalog_system_sku_id_invalid")
 
         context = dict(self.vtex_client.get_sku_context(sku_id) or {})
@@ -546,7 +571,7 @@ class VtexImageSyncService:
             return result
 
         product_id = str(product.get("id") or "").strip()
-        sku_ref_id = str(target_sku.get("externalId") or f"{normalized}-S").strip()
+        sku_ref_id = str(target_sku.get("externalId") or f"{normalized}-ST").strip()
         origin = str(product.get("origin") or "").strip()
         if origin and _normalize_key(origin) != _normalize_key(getattr(self.vtex_client, "account_name", "")):
             result.update(

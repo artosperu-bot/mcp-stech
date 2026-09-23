@@ -453,7 +453,7 @@ def test_status_uses_catalog_system_product_id_then_full_seller_product():
 
     assert status["state"] == "READY"
     assert status["product_id"] == "251"
-    assert vtex.resolve_calls == ["82YU00XYLM-S"]
+    assert vtex.resolve_calls == ["82YU00XYLM-ST"]
     assert vtex.sku_context_reads == [251]
     assert vtex.product_id_reads == ["251"]
     assert vtex.product_reads == []
@@ -487,3 +487,24 @@ def test_sync_blocks_without_put_when_numeric_seller_product_still_has_no_slug()
     assert result["product_update_performed"] is False
     assert "slug" in result["errors"][0]["error"]
     assert vtex.update_calls == []
+
+
+
+def test_sync_falls_back_to_legacy_pn_s_when_current_pn_st_does_not_exist():
+    class LegacyRefClient(FakeVtexClient):
+        def resolve_sku_id(self, ref_id: str):
+            self.resolve_calls.append(ref_id)
+            if ref_id.endswith("-ST"):
+                raise VtexImageApiError(
+                    operation="resolve_sku_id",
+                    status=404,
+                    body="not found",
+                    url="https://example.test",
+                )
+            return 251
+
+    vtex = LegacyRefClient(_seller_product())
+    status = _service(vtex).status("82YU00XYLM")
+
+    assert status["state"] == "READY"
+    assert vtex.resolve_calls == ["82YU00XYLM-ST", "82YU00XYLM-S"]
