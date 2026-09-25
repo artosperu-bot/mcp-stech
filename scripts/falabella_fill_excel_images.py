@@ -5,15 +5,13 @@ import json
 from pathlib import Path
 from typing import Any
 
-from openpyxl import load_workbook
-
 from stech_mcp import server_authoritative as server
+from stech_mcp.excel.xlsx_cell_patcher import XlsxCellPatcher
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_INPUT_DIR = PROJECT_ROOT / "EXCEL" / "FALABELLA" / "ENTRADA"
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "EXCEL" / "FALABELLA" / "SALIDA"
-
 
 IMAGE_HEADERS = [
     "Imagen principal #IM1",
@@ -29,22 +27,6 @@ IMAGE_HEADERS = [
 
 def _normalize(value: Any) -> str:
     return str(value or "").strip()
-
-
-def _header_map(sheet, row: int = 4) -> dict[str, int]:
-    result: dict[str, int] = {}
-    for column in range(1, sheet.max_column + 1):
-        value = _normalize(sheet.cell(row=row, column=column).value)
-        if value:
-            result[value] = column
-    return result
-
-
-def _find_sku_column(headers: dict[str, int]) -> int:
-    for name, column in headers.items():
-        if name.casefold().startswith("sku del vendedor"):
-            return column
-    raise ValueError("No se encontró la columna 'SKU del vendedor' en la fila 4")
 
 
 def _ensure_channel_folders() -> None:
@@ -86,11 +68,27 @@ def _output_path(input_path: Path, requested: str | None) -> Path:
     return DEFAULT_OUTPUT_DIR / f"{input_path.stem}_IMAGENES_FALABELLA.xlsx"
 
 
+def _header_map(row: dict[str, str]) -> dict[str, str]:
+    return {
+        _normalize(value): column
+        for column, value in row.items()
+        if _normalize(value)
+    }
+
+
+def _find_sku_column(headers: dict[str, str]) -> str:
+    for name, column in headers.items():
+        if name.casefold().startswith("sku del vendedor"):
+            return column
+    raise ValueError("No se encontró la columna 'SKU del vendedor' en la fila 4")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Completa las columnas de imágenes de una plantilla Falabella usando "
-            "las imágenes locales exactas de PC020 y URLs firmadas Cloudflare."
+            "imágenes locales exactas de PC020 y URLs firmadas Cloudflare, "
+            "preservando las extensiones internas del XLSX."
         )
     )
     parser.add_argument(
@@ -110,92 +108,96 @@ def main() -> int:
     input_path = _resolve_input(args.input or None)
     output_path = _output_path(input_path, args.output or None)
 
-    workbook = load_workbook(input_path)
-    if args.sheet not in workbook.sheetnames:
-        raise ValueError(f"No existe la hoja {args.sheet!r}")
-    sheet = workbook[args.sheet]
+    workbook = XlsxCellPatcher(input_path)
+    max_row, _ = workbook.sheet_dimensions(sheet_name=args.sheet)
+    if max_row < 5:
+        raise ValueError("La plantilla no contiene filas de producto")
 
-    headers = _header_map(sheet, row=4)
+    source_rows = workbook.read_rows(
+        sheet_name=args.sheet,
+        rows=list(range(4, max_row + 1)),
+    )
+    headers = _header_map(source_rows.get(4, {}))
     sku_column = _find_sku_column(headers)
+
     missing_headers = [name for name in IMAGE_HEADERS if name not in headers]
     if missing_headers:
         raise ValueError(f"Faltan columnas de imágenes: {missing_headers}")
     image_columns = [headers[name] for name in IMAGE_HEADERS]
 
-    rows: list[dict[str, Any]] = []
-    changed_cells = 0
+    report_rows: list[dict[str, Any]] = []
+    updates: dict[int, dict[str, str]] = {}
 
-    for row_number in range(5, sheet.max_row + 1):
-        partnumber = _normalize(sheet.cell(row=row_number, column=sku_column).value).upper()
+    for row_number in range(5, max_row + 1):
+        row_values = source_rows.get(row_number, {})
+        partnumber = _normalize(row_values.get(sku_column)).upper()
         if not partnumber:
             continue
 
         try:
-            prepared = server.falabella_images_prepare(partnumber=partnumber, max_images=8)
+            prepared = server.falabella_images_prepare(
+                partnumber=partnumber,
+                max_images=8,
+            )
             images = sorted(
                 list(prepared.get("images") or []),
                 key=lambda item: int(item.get("position") or 0),
             )
-            # Falabella image columns are filled contiguously. If the local
-            # inventory has a numbering gap (for example _01, _02, _04), the
-            # visual order is preserved without leaving Image3 blank.
             ordered_urls = [
                 str(item["url"])
                 for item in images
                 if item.get("url")
             ][:8]
-            written = 0
-            preserved = 0
-            for column, url in zip(image_columns, ordered_urls, strict=False):
-                cell = sheet.cell(row=row_number, column=column)
-                if _normalize(cell.value) and not args.overwrite:
-                    preserved += 1
-                    continue
-                cell.value = url
-                cell.number_format = "@"
-                changed_cells += 1
-                written += 1
 
-            rows.append(
+            updates[row_number] = {
+                column: url
+                for column, url in zip(image_columns, ordered_urls, strict=False)
+            }
+            report_rows.append(
                 {
                     "row": row_number,
                     "partnumber": partnumber,
                     "state": prepared.get("state"),
                     "prepared_images": len(images),
-                    "written_urls": written,
-                    "preserved_existing": preserved,
+                    "candidate_urls": len(ordered_urls),
                     "warning_count": prepared.get("warning_count", 0),
                     "errors": prepared.get("errors") or [],
                 }
             )
         except Exception as exc:
-            rows.append(
+            report_rows.append(
                 {
                     "row": row_number,
                     "partnumber": partnumber,
                     "state": "ERROR",
                     "prepared_images": 0,
-                    "written_urls": 0,
-                    "preserved_existing": 0,
+                    "candidate_urls": 0,
                     "warning_count": 0,
                     "errors": [f"{type(exc).__name__}: {exc}"],
                 }
             )
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    workbook.save(output_path)
+    write_result = workbook.write_copy(
+        output_path=output_path,
+        sheet_name=args.sheet,
+        updates=updates,
+        overwrite=bool(args.overwrite),
+    )
 
     summary = {
         "ok": True,
         "input": str(input_path),
         "output": str(output_path),
         "sheet": args.sheet,
-        "sku_count": len(rows),
-        "changed_cells": changed_cells,
+        "sku_count": len(report_rows),
+        "changed_cells": write_result["changed_cells"],
+        "preserved_existing": write_result["preserved_existing"],
         "overwrite": bool(args.overwrite),
+        "writer": write_result["writer"],
+        "template_extensions_preserved": True,
         "auto_input_folder": str(DEFAULT_INPUT_DIR),
         "auto_output_folder": str(DEFAULT_OUTPUT_DIR),
-        "rows": rows,
+        "rows": report_rows,
     }
     print(json.dumps(summary, ensure_ascii=False, indent=2, default=str))
     return 0
