@@ -13,6 +13,10 @@ class FakeRepository:
         self.calls.append(("list", status, limit))
         return [{"taxonomy_review_id": 1}, {"taxonomy_review_id": 2}]
 
+    def count_reviews(self, *, status):
+        self.calls.append(("count", status))
+        return 1234
+
     def list_missing(self, *, limit, distributor):
         self.calls.append(("missing", limit, distributor))
         return [{"producto_distribuidor_id": 101}]
@@ -58,7 +62,9 @@ def test_sync_queues_only_unresolved_products():
     out = service.sync(limit=50, distributor="DELTRON")
 
     assert out["detected"] == 2
-    assert out["pending_count"] == 2
+    assert out["pending_count"] == 1234
+    assert out["pending_sample_count"] == 2
+    assert len(out["pending_sample"]) == 2
     assert repo.calls[0] == ("sync", 50, "DELTRON")
 
 
