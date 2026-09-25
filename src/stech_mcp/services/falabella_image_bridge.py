@@ -226,7 +226,12 @@ class FalabellaImageBridgeService:
                 "rules": self.rules(),
             }
 
-        selected = source_images[:bounded]
+        eligible = [
+            row
+            for row in source_images
+            if 1 <= int(row.get("position") or 0) <= 8
+        ]
+        selected = eligible[:bounded]
         if not any(int(row.get("position") or 0) == 1 for row in selected):
             return {
                 "found": True,
@@ -268,6 +273,9 @@ class FalabellaImageBridgeService:
             "found": True,
             "partnumber": normalized,
             "state": state,
+            "source_image_count": len(source_images),
+            "eligible_image_count": len(eligible),
+            "ignored_image_count": max(len(source_images) - len(eligible), 0),
             "image_count": len(prepared),
             "main_image_url": next(
                 (item["url"] for item in prepared if item.get("is_main")),
