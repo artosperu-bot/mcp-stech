@@ -153,14 +153,16 @@ class FalabellaImageBridgeService:
                 canvas.paste(resized.convert("RGB"), (left, top))
 
         payload, quality = self._encode_jpeg(canvas)
+        digest = hashlib.sha256(payload).hexdigest()
         output_dir = self.channel_root / "FALABELLA" / partnumber
         output_dir.mkdir(parents=True, exist_ok=True)
-        output_path = output_dir / f"{partnumber}_{position:02d}.jpg"
+        # Content-addressed filenames keep signed URLs immutable if a source
+        # image is replaced later with a different binary.
+        output_path = output_dir / f"{partnumber}_{position:02d}_{digest[:12]}.jpg"
         temporary = output_path.with_suffix(".jpg.tmp")
         temporary.write_bytes(payload)
         temporary.replace(output_path)
 
-        digest = hashlib.sha256(payload).hexdigest()
         variant = self.repository.insert_variant(
             parent_image_id=image_id,
             storage_path=str(output_path),
