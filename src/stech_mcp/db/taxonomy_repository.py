@@ -106,12 +106,100 @@ ORDER BY COUNT_BIG(*) DESC, category, subcategory"""
             if callable(close):
                 close()
 
+    def reconcile_resolved_reviews(self, *, limit: int = 5000) -> int:
+        """Close stale review rows when source taxonomy is already meaningful."""
+        bounded = max(1, min(int(limit), 5000))
+        mcp = self._mcp_connection_factory()
+        try:
+            cursor = mcp.cursor()
+            cursor.execute(
+                f"""SELECT TOP ({bounded}) taxonomy_review_id, producto_distribuidor_id
+FROM dbo.taxonomy_review
+WHERE status IN ('PENDING','PROPOSED','APPROVED','ERROR')
+ORDER BY taxonomy_review_id"""
+            )
+            review_rows = list(cursor.fetchall())
+        finally:
+            close = getattr(mcp, "close", None)
+            if callable(close):
+                close()
+
+        if not review_rows:
+            return 0
+
+        by_source = {int(row[1]): int(row[0]) for row in review_rows}
+        source_state: dict[int, tuple[str | None, str | None]] = {}
+        source = self._source_connection_factory()
+        try:
+            cursor = source.cursor()
+            source_ids = list(by_source)
+            for offset in range(0, len(source_ids), 500):
+                chunk = source_ids[offset:offset + 500]
+                placeholders = ",".join("?" for _ in chunk)
+                cursor.execute(
+                    f"""SELECT producto_distribuidor_id, categoria, subcategoria
+FROM dbo.PRD_PRODUCTO_DISTRIBUIDOR
+WHERE producto_distribuidor_id IN ({placeholders})""",
+                    *chunk,
+                )
+                for row in cursor.fetchall():
+                    source_state[int(row[0])] = (_clean(row[1]), _clean(row[2]))
+        finally:
+            close = getattr(source, "close", None)
+            if callable(close):
+                close()
+
+        resolved: list[tuple[int, str, str]] = []
+        for source_id, review_id in by_source.items():
+            current = source_state.get(source_id)
+            if current is None:
+                continue
+            category, subcategory = current
+            if (
+                category
+                and subcategory
+                and category.upper() not in _GENERIC_CATEGORIES
+            ):
+                resolved.append((review_id, category, subcategory))
+
+        if not resolved:
+            return 0
+
+        mcp = self._mcp_connection_factory()
+        try:
+            cursor = mcp.cursor()
+            for review_id, category, subcategory in resolved:
+                cursor.execute(
+                    """UPDATE dbo.taxonomy_review
+SET status = 'RESOLVED_EXTERNALLY',
+    current_category = ?,
+    current_subcategory = ?,
+    last_error = NULL,
+    updated_at = SYSUTCDATETIME()
+WHERE taxonomy_review_id = ?
+  AND status IN ('PENDING','PROPOSED','APPROVED','ERROR')""",
+                    category,
+                    subcategory,
+                    review_id,
+                )
+            mcp.commit()
+        except Exception:
+            if hasattr(mcp, "rollback"):
+                mcp.rollback()
+            raise
+        finally:
+            close = getattr(mcp, "close", None)
+            if callable(close):
+                close()
+        return len(resolved)
+
     def sync_missing(
         self,
         *,
         limit: int = 1000,
         distributor: str | None = None,
     ) -> dict[str, Any]:
+        resolved = self.reconcile_resolved_reviews(limit=5000)
         rows = self.list_missing(limit=limit, distributor=distributor)
         inserted = 0
         refreshed = 0
@@ -188,6 +276,7 @@ WHERE producto_distribuidor_id = ?""",
             "detected": len(rows),
             "inserted": inserted,
             "refreshed": refreshed,
+            "resolved_existing": resolved,
             "distributor": _clean(distributor),
         }
 
