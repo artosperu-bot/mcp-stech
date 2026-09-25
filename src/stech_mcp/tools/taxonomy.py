@@ -40,9 +40,14 @@ def register_taxonomy_tools(
     def taxonomy_review_list(
         status: str | None = "PENDING",
         limit: int = 100,
+        after_review_id: int = 0,
     ) -> dict[str, Any]:
-        """List taxonomy review rows by workflow status."""
-        return service.list(status=status, limit=limit)
+        """List taxonomy reviews by status using stable review-id pagination."""
+        return service.list(
+            status=status,
+            limit=limit,
+            after_review_id=after_review_id,
+        )
 
     @mcp.tool()
     def taxonomy_review_get(review_id: int) -> dict[str, Any]:
@@ -68,6 +73,35 @@ def register_taxonomy_tools(
             reason=reason,
             evidence=evidence,
             proposed_by=proposed_by,
+        )
+
+    @mcp.tool()
+    def taxonomy_propose_batch(
+        items: list[dict[str, Any]],
+        proposed_by: str = "CHATGPT",
+    ) -> dict[str, Any]:
+        """Store up to 500 taxonomy proposals without approving or applying them."""
+        return service.propose_batch(items, proposed_by=proposed_by)
+
+    @mcp.tool()
+    def taxonomy_approve_batch(
+        review_ids: list[int],
+        approved_by: str = "USER",
+    ) -> dict[str, Any]:
+        """Approve a bounded set of already-PROPOSED taxonomy reviews."""
+        return service.approve_batch(review_ids, approved_by=approved_by)
+
+    @mcp.tool()
+    def taxonomy_apply_batch(
+        review_ids: list[int],
+        applied_by: str = "CHATGPT",
+        stop_on_error: bool = False,
+    ) -> dict[str, Any]:
+        """Apply approved reviews one by one, preserving every existing source guard."""
+        return service.apply_batch(
+            review_ids,
+            applied_by=applied_by,
+            stop_on_error=stop_on_error,
         )
 
     @mcp.tool()
@@ -107,6 +141,9 @@ def register_taxonomy_tools(
         "taxonomy_review_list": taxonomy_review_list,
         "taxonomy_review_get": taxonomy_review_get,
         "taxonomy_propose": taxonomy_propose,
+        "taxonomy_propose_batch": taxonomy_propose_batch,
+        "taxonomy_approve_batch": taxonomy_approve_batch,
+        "taxonomy_apply_batch": taxonomy_apply_batch,
         "taxonomy_sql_preview": taxonomy_sql_preview,
         "taxonomy_approve": taxonomy_approve,
         "taxonomy_reject": taxonomy_reject,

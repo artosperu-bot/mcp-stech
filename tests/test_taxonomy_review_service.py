@@ -9,8 +9,8 @@ class FakeRepository:
         self.calls.append(("sync", limit, distributor))
         return {"detected": 2, "inserted": 2, "refreshed": 0}
 
-    def list_reviews(self, *, status, limit):
-        self.calls.append(("list", status, limit))
+    def list_reviews(self, *, status, limit, after_review_id=0):
+        self.calls.append(("list", status, limit, after_review_id))
         return [{"taxonomy_review_id": 1}, {"taxonomy_review_id": 2}]
 
     def count_reviews(self, *, status):
@@ -96,3 +96,73 @@ def test_apply_is_separate_from_propose_and_approve():
     assert proposed["review"]["status"] == "PROPOSED"
     assert approved["review"]["status"] == "APPROVED"
     assert applied["review"]["status"] == "APPLIED"
+
+
+def test_batch_propose_approve_apply_preserves_review_stages():
+    service = TaxonomyReviewService(FakeRepository())
+
+    proposed = service.propose_batch(
+        [
+            {
+                "review_id": 41,
+                "category": "REPUESTOS",
+                "subcategory": "REPUESTO PARA NOTEBOOK",
+                "confidence": "MEDIA",
+                "reason": "Pieza interna ASUS para notebook.",
+                "evidence": ["product_name"],
+            },
+            {
+                "review_id": 48,
+                "category": "COMPONENTES",
+                "subcategory": "FUENTE DE PODER",
+                "confidence": "ALTA",
+                "reason": "PSU ASUS.",
+                "evidence": ["product_name:PSU"],
+            },
+        ],
+        proposed_by="CHATGPT",
+    )
+    approved = service.approve_batch([41, 48], approved_by="STEVE")
+    applied = service.apply_batch([41, 48], applied_by="CHATGPT")
+
+    assert proposed["proposed_count"] == 2
+    assert proposed["error_count"] == 0
+    assert approved["approved_count"] == 2
+    assert applied["applied_count"] == 2
+
+
+def test_batch_rejects_duplicate_review_id_without_aborting_other_items():
+    service = TaxonomyReviewService(FakeRepository())
+
+    out = service.propose_batch(
+        [
+            {
+                "review_id": 41,
+                "category": "REPUESTOS",
+                "subcategory": "REPUESTO PARA NOTEBOOK",
+                "confidence": "ALTA",
+                "reason": "pieza",
+            },
+            {
+                "review_id": 41,
+                "category": "REPUESTOS",
+                "subcategory": "REPUESTO PARA NOTEBOOK",
+                "confidence": "ALTA",
+                "reason": "duplicado",
+            },
+        ]
+    )
+
+    assert out["proposed_count"] == 1
+    assert out["error_count"] == 1
+
+
+def test_review_list_returns_stable_pagination_cursor():
+    service = TaxonomyReviewService(FakeRepository())
+
+    out = service.list(status="PENDING", limit=2, after_review_id=40)
+
+    assert out["after_review_id"] == 40
+    assert out["next_after_review_id"] == 2
+    assert out["has_more"] is True
+    assert out["count"] == 2
