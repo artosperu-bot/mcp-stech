@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import secrets
+from pathlib import Path
 from typing import Literal
 
 from pydantic import AliasChoices, Field, PrivateAttr, model_validator
@@ -86,6 +87,19 @@ class Settings(BaseSettings):
     vtex_image_url_ttl_seconds: int = 900
     vtex_http_timeout_seconds: int = 30
 
+    # Falabella image bridge. Originals remain untouched under STECH_IMAGE_ROOT;
+    # channel-ready JPEG variants are stored separately and exposed only by
+    # signed, expiring Cloudflare URLs.
+    stech_channel_image_root: str = r"C:\STECH_IMAGENES_CHANNELS"
+    falabella_image_public_base: str = "https://mcp.artos.pe/falabella-images"
+    falabella_image_signing_secret: str | None = None
+    falabella_image_signing_secret_file: str | None = None
+    falabella_image_url_ttl_seconds: int = 172800
+    falabella_image_canvas_px: int = 1500
+    falabella_image_max_bytes: int = 150 * 1024
+    falabella_image_min_source_px: int = 500
+    falabella_image_margin_px: int = 30
+
     _generated_vtex_image_signing_secret: str | None = PrivateAttr(default=None)
 
     @model_validator(mode="after")
@@ -99,7 +113,45 @@ class Settings(BaseSettings):
             raise ValueError("VTEX_IMAGE_URL_TTL_SECONDS must be greater than zero")
         if self.vtex_http_timeout_seconds <= 0:
             raise ValueError("VTEX_HTTP_TIMEOUT_SECONDS must be greater than zero")
+        if not (500 <= self.falabella_image_canvas_px <= 2000):
+            raise ValueError("FALABELLA_IMAGE_CANVAS_PX must be between 500 and 2000")
+        if self.falabella_image_url_ttl_seconds <= 0:
+            raise ValueError("FALABELLA_IMAGE_URL_TTL_SECONDS must be greater than zero")
+        if self.falabella_image_max_bytes <= 0:
+            raise ValueError("FALABELLA_IMAGE_MAX_BYTES must be greater than zero")
+        if self.falabella_image_min_source_px <= 0:
+            raise ValueError("FALABELLA_IMAGE_MIN_SOURCE_PX must be greater than zero")
+        if self.falabella_image_margin_px < 0 or self.falabella_image_margin_px * 2 >= self.falabella_image_canvas_px:
+            raise ValueError("FALABELLA_IMAGE_MARGIN_PX is invalid for the configured canvas")
         return self
+
+    def falabella_image_signing_secret_value(self) -> str:
+        """Return a persistent signing secret for long-lived Falabella image URLs.
+
+        An explicit FALABELLA_IMAGE_SIGNING_SECRET wins. If absent, the secret is
+        stored outside Git under STECH_IMAGE_CHANNEL_ROOT so MCP restarts do not
+        invalidate URLs that Seller Center may still be downloading.
+        """
+
+        explicit = str(self.falabella_image_signing_secret or "").strip()
+        if explicit:
+            return explicit
+
+        configured = str(self.falabella_image_signing_secret_file or "").strip()
+        secret_path = (
+            Path(configured).expanduser()
+            if configured
+            else Path(self.stech_channel_image_root).expanduser() / ".falabella-image-signing-secret"
+        )
+        secret_path.parent.mkdir(parents=True, exist_ok=True)
+        if secret_path.is_file():
+            existing = secret_path.read_text(encoding="utf-8").strip()
+            if existing:
+                return existing
+
+        value = secrets.token_urlsafe(48)
+        secret_path.write_text(value, encoding="utf-8")
+        return value
 
     def vtex_image_signing_secret_value(self) -> str:
         """Return explicit secret or lazily generate one for this MCP process.
