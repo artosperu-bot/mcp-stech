@@ -92,17 +92,17 @@ def main() -> int:
                 list(prepared.get("images") or []),
                 key=lambda item: int(item.get("position") or 0),
             )
-            urls_by_position = {
-                int(item["position"]): str(item["url"])
+            # Falabella image columns are filled contiguously. If the local
+            # inventory has a numbering gap (for example _01, _02, _04), the
+            # visual order is preserved without leaving Image3 blank.
+            ordered_urls = [
+                str(item["url"])
                 for item in images
-                if item.get("position") and item.get("url")
-            }
+                if item.get("url")
+            ][:8]
             written = 0
             preserved = 0
-            for position, column in enumerate(image_columns, start=1):
-                url = urls_by_position.get(position)
-                if not url:
-                    continue
+            for column, url in zip(image_columns, ordered_urls, strict=False):
                 cell = sheet.cell(row=row_number, column=column)
                 if _normalize(cell.value) and not args.overwrite:
                     preserved += 1
