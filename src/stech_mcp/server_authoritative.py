@@ -22,6 +22,7 @@ from stech_mcp.db.product_schema_repository import ProductSchemaRepository
 from stech_mcp.db.product_work_control_repository import ProductWorkControlRepository
 from stech_mcp.db.product_work_query_repository import ProductWorkQueryRepository
 from stech_mcp.db.source_document_repository import SourceDocumentRepository
+from stech_mcp.db.taxonomy_repository import TaxonomyRepository
 from stech_mcp.http.source_client import SourceClient
 from stech_mcp.excel.excel_writer import ExcelWriter
 from stech_mcp.excel.template_inspector import TemplateInspector
@@ -46,6 +47,7 @@ from stech_mcp.services.product_workspace_v2 import ProductWorkspaceV2Service
 from stech_mcp.services.research.brave_image_search_provider import BraveImageSearchProvider
 from stech_mcp.services.research.research_planner import ResearchPlanner
 from stech_mcp.services.source_document_service import SourceDocumentService
+from stech_mcp.services.taxonomy_review import TaxonomyReviewService
 from stech_mcp.services.vtex_image_sync_authoritative import VtexImageSyncService
 from stech_mcp.tools.excel import register_excel_tools
 from stech_mcp.tools.marketing import register_marketing_tools
@@ -53,6 +55,7 @@ from stech_mcp.tools.product_research import register_product_research_tools
 from stech_mcp.tools.product_schema import register_product_schema_tools
 from stech_mcp.tools.product_work import register_product_work_tools
 from stech_mcp.tools.product_workspace_v2 import register_product_workspace_v2_tools
+from stech_mcp.tools.taxonomy import register_taxonomy_tools
 
 
 vtex_image_sync_service = VtexImageSyncService(
@@ -200,6 +203,19 @@ excel_tools = register_excel_tools(
     namespace=_server,
 )
 
+# CAT_V2 handles deterministic taxonomy inside V8. The MCP queue only captures
+# unresolved gaps for review and never writes DB_DISTRIBUIDORES without approval.
+taxonomy_repository = TaxonomyRepository(
+    _server.source_connection_factory,
+    _server.mcp_connection_factory,
+)
+taxonomy_review_service = TaxonomyReviewService(taxonomy_repository)
+taxonomy_tools = register_taxonomy_tools(
+    _server.mcp,
+    service=taxonomy_review_service,
+    namespace=_server,
+)
+
 background_config = BackgroundConfig.from_env()
 product_scanner = ProductScanner(
     product_repository=_server.product_repository,
@@ -252,6 +268,16 @@ maintenance_autofill_jobs = product_workspace_v2_tools["maintenance_autofill_job
 product_workspace_smart_complete = product_workspace_v2_tools["product_workspace_smart_complete"]
 excel_template_inspect = excel_tools["excel_template_inspect"]
 excel_write_copy = excel_tools["excel_write_copy"]
+taxonomy_missing_list = taxonomy_tools["taxonomy_missing_list"]
+taxonomy_catalog_get = taxonomy_tools["taxonomy_catalog_get"]
+taxonomy_review_sync = taxonomy_tools["taxonomy_review_sync"]
+taxonomy_review_list = taxonomy_tools["taxonomy_review_list"]
+taxonomy_review_get = taxonomy_tools["taxonomy_review_get"]
+taxonomy_propose = taxonomy_tools["taxonomy_propose"]
+taxonomy_sql_preview = taxonomy_tools["taxonomy_sql_preview"]
+taxonomy_approve = taxonomy_tools["taxonomy_approve"]
+taxonomy_reject = taxonomy_tools["taxonomy_reject"]
+taxonomy_apply = taxonomy_tools["taxonomy_apply"]
 
 
 def main() -> None:
