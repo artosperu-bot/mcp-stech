@@ -6,7 +6,7 @@ from typing import Any
 
 
 _TERMINAL = {"APPLIED", "REJECTED", "RESOLVED_EXTERNALLY"}
-_GENERIC_CATEGORIES = {"COMPONENTE", "COMPONENTES", "PRODUCTO", "OTROS"}
+_GENERIC_CATEGORIES = {"COMPONENTE", "PRODUCTO", "OTROS"}
 
 
 def _row_to_dict(cursor: Any, row: Any) -> dict[str, Any] | None:
@@ -68,7 +68,7 @@ INNER JOIN dbo.DST_DISTRIBUIDOR AS d
 WHERE p.activo = 1
   AND (
       NULLIF(LTRIM(RTRIM(p.categoria)), '') IS NULL
-      OR UPPER(LTRIM(RTRIM(p.categoria))) IN ('COMPONENTE','COMPONENTES','PRODUCTO','OTROS')
+      OR UPPER(LTRIM(RTRIM(p.categoria))) IN ('COMPONENTE','PRODUCTO','OTROS')
       OR NULLIF(LTRIM(RTRIM(p.subcategoria)), '') IS NULL
   )
 """
@@ -217,6 +217,25 @@ FROM dbo.taxonomy_review
 ORDER BY updated_at DESC, taxonomy_review_id DESC"""
                 )
             return _rows_to_dicts(cursor, list(cursor.fetchall()))
+        finally:
+            close = getattr(connection, "close", None)
+            if callable(close):
+                close()
+
+    def count_reviews(self, *, status: str | None = "PENDING") -> int:
+        state = _clean(status)
+        connection = self._mcp_connection_factory()
+        try:
+            cursor = connection.cursor()
+            if state:
+                cursor.execute(
+                    "SELECT COUNT_BIG(*) FROM dbo.taxonomy_review WHERE status = ?",
+                    state.upper(),
+                )
+            else:
+                cursor.execute("SELECT COUNT_BIG(*) FROM dbo.taxonomy_review")
+            row = cursor.fetchone()
+            return int(row[0]) if row else 0
         finally:
             close = getattr(connection, "close", None)
             if callable(close):
@@ -400,7 +419,7 @@ WHERE taxonomy_review_id = ?""",
             "sql": (
                 "UPDATE dbo.PRD_PRODUCTO_DISTRIBUIDOR SET "
                 "categoria = CASE WHEN NULLIF(LTRIM(RTRIM(categoria)), '') IS NULL "
-                "OR UPPER(LTRIM(RTRIM(categoria))) IN ('COMPONENTE','COMPONENTES','PRODUCTO','OTROS') "
+                "OR UPPER(LTRIM(RTRIM(categoria))) IN ('COMPONENTE','PRODUCTO','OTROS') "
                 "THEN ? ELSE categoria END, "
                 "subcategoria = CASE WHEN NULLIF(LTRIM(RTRIM(subcategoria)), '') IS NULL THEN ? ELSE subcategoria END, "
                 "updated_at = SYSDATETIME() WHERE producto_distribuidor_id = ?;"
@@ -460,7 +479,7 @@ WHERE producto_distribuidor_id = ?""",
                 """UPDATE dbo.PRD_PRODUCTO_DISTRIBUIDOR
 SET categoria = CASE
         WHEN NULLIF(LTRIM(RTRIM(categoria)), '') IS NULL
-          OR UPPER(LTRIM(RTRIM(categoria))) IN ('COMPONENTE','COMPONENTES','PRODUCTO','OTROS')
+          OR UPPER(LTRIM(RTRIM(categoria))) IN ('COMPONENTE','PRODUCTO','OTROS')
         THEN ?
         ELSE categoria
     END,
