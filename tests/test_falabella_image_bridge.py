@@ -94,7 +94,9 @@ def test_prepare_creates_channel_variant_without_modifying_original(tmp_path):
     assert _sha(source) == original_hash
 
     output = Path(prepared["storage_path"])
-    assert output == channel_root / "FALABELLA" / "82YU00XYLM" / "82YU00XYLM_01.jpg"
+    assert output.parent == channel_root / "FALABELLA" / "82YU00XYLM"
+    assert output.name.startswith("82YU00XYLM_01_")
+    assert output.suffix == ".jpg"
     with Image.open(output) as rendered:
         assert rendered.size == (1500, 1500)
         assert rendered.format == "JPEG"
