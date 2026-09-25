@@ -18,8 +18,9 @@ from stech_mcp.db.product_master_repository import ProductMasterRepository
 from stech_mcp.db.product_repository import ProductRepository
 from stech_mcp.domain.packaging_resolver import resolve_package
 from stech_mcp.domain.packaging_rules import estimate_package_weight, validate_package_dimensions
-from stech_mcp.http.image_route import build_vtex_image_route
+from stech_mcp.http.image_route import build_falabella_image_route, build_vtex_image_route
 from stech_mcp.services.coolbox_preview import _load_specs, _screen, build_coolbox_preview
+from stech_mcp.services.falabella_image_bridge import FalabellaImageBridgeService
 from stech_mcp.services.image_signing import ImageUrlSigner
 from stech_mcp.services.local_image_sync import LocalImageSyncService
 from stech_mcp.services.marketplace_preview import build_marketplace_preview
@@ -55,6 +56,22 @@ image_signer = ImageUrlSigner(
     secret=settings.vtex_image_signing_secret_value(),
     public_base=settings.vtex_image_public_base,
     ttl_seconds=settings.vtex_image_url_ttl_seconds,
+)
+falabella_image_signer = ImageUrlSigner(
+    secret=settings.falabella_image_signing_secret_value(),
+    public_base=settings.falabella_image_public_base,
+    ttl_seconds=settings.falabella_image_url_ttl_seconds,
+)
+falabella_image_service = FalabellaImageBridgeService(
+    source_root=settings.stech_image_root,
+    channel_root=settings.stech_channel_image_root,
+    local_service=local_image_sync_service,
+    repository=product_image_repository,
+    signer=falabella_image_signer,
+    canvas_px=settings.falabella_image_canvas_px,
+    max_bytes=settings.falabella_image_max_bytes,
+    min_source_px=settings.falabella_image_min_source_px,
+    margin_px=settings.falabella_image_margin_px,
 )
 vtex_image_client = (
     VtexImageClient(
@@ -499,6 +516,21 @@ def product_images_validate(partnumber: str) -> dict[str, Any]:
 
 
 @mcp.tool()
+def falabella_images_prepare(partnumber: str, max_images: int = 8) -> dict[str, Any]:
+    """Prepara hasta 8 imágenes Falabella 1500x1500 y devuelve URLs firmadas públicas."""
+    return falabella_image_service.prepare(partnumber, max_images=max_images)
+
+
+@mcp.tool()
+def falabella_images_prepare_batch(
+    partnumbers: list[str],
+    max_images: int = 8,
+) -> dict[str, Any]:
+    """Prepara imágenes Falabella por lote, conservando originales y orden _01.._08."""
+    return falabella_image_service.prepare_batch(partnumbers, max_images=max_images)
+
+
+@mcp.tool()
 def vtex_images_status(partnumber: str, account_code: str = "VTEX_STECH") -> dict[str, Any]:
     """Consulta estado local/remoto de imágenes VTEX sin crear ni borrar imágenes."""
     return vtex_image_sync_service.status(partnumber, account_code=account_code)
@@ -686,6 +718,14 @@ def main() -> None:
             signer=image_signer,
             image_repository=product_image_repository,
             root=settings.stech_image_root,
+        ),
+    )
+    app.routes.insert(
+        0,
+        build_falabella_image_route(
+            signer=falabella_image_signer,
+            image_repository=product_image_repository,
+            root=settings.stech_channel_image_root,
         ),
     )
     uvicorn.run(app, host=settings.mcp_host, port=settings.mcp_port)
