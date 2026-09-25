@@ -18,7 +18,7 @@ def main() -> int:
             "for review. This command never applies category changes."
         )
     )
-    parser.add_argument("--limit", type=int, default=2000)
+    parser.add_argument("--limit", type=int, default=5000)
     parser.add_argument("--distributor", default="")
     args = parser.parse_args()
 
