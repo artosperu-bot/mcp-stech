@@ -40,9 +40,14 @@ def register_taxonomy_tools(
     def taxonomy_review_list(
         status: str | None = "PENDING",
         limit: int = 100,
+        after_review_id: int = 0,
     ) -> dict[str, Any]:
-        """List taxonomy review rows by workflow status."""
-        return service.list(status=status, limit=limit)
+        """List taxonomy reviews by status using stable review-id pagination."""
+        return service.list(
+            status=status,
+            limit=limit,
+            after_review_id=after_review_id,
+        )
 
     @mcp.tool()
     def taxonomy_review_get(review_id: int) -> dict[str, Any]:
