@@ -40,12 +40,16 @@ Script: `scripts/falabella_fill_excel_images.py`.
 
 Busca en la fila 4 `SKU del vendedor #29` e `Imagen principal #IM1` hasta `Imagen8 #IM8`, prepara imágenes y completa las URLs. No reemplaza URLs existentes salvo que se use `--overwrite`.
 
-Ejemplo PowerShell:
+Flujo recomendado sin escribir rutas:
 
-    cd C:\\DESAROLLO\\mcp-stech
-    .\\.venv\\Scripts\\python.exe .\\scripts\\falabella_fill_excel_images.py "C:\\RUTA\\ProductCreationTemplate.xlsx"
+1. Copiar el Excel a `C:\\DESAROLLO\\mcp-stech\\EXCEL\\FALABELLA\\ENTRADA`.
+2. Ejecutar `.\\RUN_FALABELLA_EXCEL.ps1` o hacer doble clic en `FALABELLA_EXCEL.bat`.
+3. El sistema toma automáticamente el `.xlsx` más reciente de ENTRADA.
+4. El resultado queda en `C:\\DESAROLLO\\mcp-stech\\EXCEL\\FALABELLA\\SALIDA`.
 
-La salida por defecto será `ProductCreationTemplate_IMAGENES_FALABELLA.xlsx`.
+También se mantiene el argumento de ruta opcional para usos avanzados.
+
+La salida se nombra `<archivo_original>_IMAGENES_FALABELLA.xlsx`.
 
 ## Configuración
 
