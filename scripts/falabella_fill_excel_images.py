@@ -10,6 +10,11 @@ from openpyxl import load_workbook
 from stech_mcp import server_authoritative as server
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_INPUT_DIR = PROJECT_ROOT / "EXCEL" / "FALABELLA" / "ENTRADA"
+DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "EXCEL" / "FALABELLA" / "SALIDA"
+
+
 IMAGE_HEADERS = [
     "Imagen principal #IM1",
     "Imagen2 #IM2",
@@ -42,10 +47,43 @@ def _find_sku_column(headers: dict[str, int]) -> int:
     raise ValueError("No se encontró la columna 'SKU del vendedor' en la fila 4")
 
 
+def _ensure_channel_folders() -> None:
+    DEFAULT_INPUT_DIR.mkdir(parents=True, exist_ok=True)
+    DEFAULT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _latest_input() -> Path:
+    _ensure_channel_folders()
+    candidates = [
+        path
+        for path in DEFAULT_INPUT_DIR.glob("*.xlsx")
+        if path.is_file()
+        and not path.name.startswith("~$")
+        and "_IMAGENES_FALABELLA" not in path.stem.upper()
+    ]
+    if not candidates:
+        raise FileNotFoundError(
+            "No hay archivos .xlsx en "
+            f"{DEFAULT_INPUT_DIR}. Copia allí la plantilla Falabella y vuelve a ejecutar."
+        )
+    return max(candidates, key=lambda path: (path.stat().st_mtime, path.name.lower()))
+
+
+def _resolve_input(requested: str | None) -> Path:
+    if requested:
+        path = Path(requested).expanduser().resolve()
+    else:
+        path = _latest_input()
+    if not path.is_file():
+        raise FileNotFoundError(str(path))
+    return path
+
+
 def _output_path(input_path: Path, requested: str | None) -> Path:
+    _ensure_channel_folders()
     if requested:
         return Path(requested).expanduser().resolve()
-    return input_path.with_name(f"{input_path.stem}_IMAGENES_FALABELLA.xlsx")
+    return DEFAULT_OUTPUT_DIR / f"{input_path.stem}_IMAGENES_FALABELLA.xlsx"
 
 
 def main() -> int:
@@ -55,15 +93,21 @@ def main() -> int:
             "las imágenes locales exactas de PC020 y URLs firmadas Cloudflare."
         )
     )
-    parser.add_argument("input", help="Ruta al XLSX de Falabella")
+    parser.add_argument(
+        "input",
+        nargs="?",
+        default="",
+        help=(
+            "Ruta opcional al XLSX. Si se omite, usa automáticamente el Excel "
+            "más reciente de EXCEL\\FALABELLA\\ENTRADA."
+        ),
+    )
     parser.add_argument("--output", default="")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--sheet", default="Subir plantilla")
     args = parser.parse_args()
 
-    input_path = Path(args.input).expanduser().resolve()
-    if not input_path.is_file():
-        raise FileNotFoundError(str(input_path))
+    input_path = _resolve_input(args.input or None)
     output_path = _output_path(input_path, args.output or None)
 
     workbook = load_workbook(input_path)
@@ -149,6 +193,8 @@ def main() -> int:
         "sku_count": len(rows),
         "changed_cells": changed_cells,
         "overwrite": bool(args.overwrite),
+        "auto_input_folder": str(DEFAULT_INPUT_DIR),
+        "auto_output_folder": str(DEFAULT_OUTPUT_DIR),
         "rows": rows,
     }
     print(json.dumps(summary, ensure_ascii=False, indent=2, default=str))
