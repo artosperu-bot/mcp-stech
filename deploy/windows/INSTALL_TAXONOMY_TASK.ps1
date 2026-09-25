@@ -1,6 +1,6 @@
 param(
     [int]$IntervalMinutes = 240,
-    [int]$Limit = 2000,
+    [int]$Limit = 5000,
     [string]$Distributor = ""
 )
 
