@@ -64,6 +64,119 @@ class TaxonomyReviewService:
         )
         return {"proposed": True, "review": row}
 
+    @staticmethod
+    def _review_ids(values: list[int], *, max_items: int = 500) -> list[int]:
+        rows: list[int] = []
+        seen: set[int] = set()
+        for raw in list(values or [])[:max_items]:
+            review_id = int(raw)
+            if review_id <= 0 or review_id in seen:
+                continue
+            seen.add(review_id)
+            rows.append(review_id)
+        if not rows:
+            raise ValueError("at least one valid review_id is required")
+        return rows
+
+    def propose_batch(
+        self,
+        items: list[dict[str, Any]],
+        *,
+        proposed_by: str = "CHATGPT",
+    ) -> dict[str, Any]:
+        rows = list(items or [])
+        if not rows:
+            raise ValueError("items are required")
+        if len(rows) > 500:
+            raise ValueError("maximum 500 taxonomy proposals per batch")
+        results: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        seen: set[int] = set()
+        for raw in rows:
+            try:
+                review_id = int(raw.get("review_id"))
+                if review_id <= 0:
+                    raise ValueError("review_id must be positive")
+                if review_id in seen:
+                    raise ValueError("duplicate review_id")
+                seen.add(review_id)
+                result = self.propose(
+                    review_id,
+                    category=str(raw.get("category") or ""),
+                    subcategory=str(raw.get("subcategory") or ""),
+                    confidence=str(raw.get("confidence") or "MEDIA"),
+                    reason=str(raw.get("reason") or ""),
+                    evidence=list(raw.get("evidence") or []),
+                    proposed_by=proposed_by,
+                )
+                results.append(result)
+            except Exception as exc:
+                errors.append({
+                    "review_id": raw.get("review_id"),
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
+        return {
+            "requested_count": len(rows),
+            "proposed_count": len(results),
+            "error_count": len(errors),
+            "results": results,
+            "errors": errors,
+        }
+
+    def approve_batch(
+        self,
+        review_ids: list[int],
+        *,
+        approved_by: str,
+    ) -> dict[str, Any]:
+        ids = self._review_ids(review_ids)
+        results: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        for review_id in ids:
+            try:
+                results.append(self.approve(review_id, approved_by=approved_by))
+            except Exception as exc:
+                errors.append({
+                    "review_id": review_id,
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
+        return {
+            "requested_count": len(ids),
+            "approved_count": len(results),
+            "error_count": len(errors),
+            "results": results,
+            "errors": errors,
+        }
+
+    def apply_batch(
+        self,
+        review_ids: list[int],
+        *,
+        applied_by: str,
+        stop_on_error: bool = False,
+    ) -> dict[str, Any]:
+        ids = self._review_ids(review_ids)
+        results: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        for review_id in ids:
+            try:
+                results.append(self.apply(review_id, applied_by=applied_by))
+            except Exception as exc:
+                errors.append({
+                    "review_id": review_id,
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
+                if stop_on_error:
+                    break
+        return {
+            "requested_count": len(ids),
+            "applied_count": len(results),
+            "error_count": len(errors),
+            "stopped_early": bool(stop_on_error and errors),
+            "results": results,
+            "errors": errors,
+        }
+
     def approve(self, review_id: int, *, approved_by: str) -> dict[str, Any]:
         return {"approved": True, "review": self.repository.approve(int(review_id), approved_by=approved_by)}
 
