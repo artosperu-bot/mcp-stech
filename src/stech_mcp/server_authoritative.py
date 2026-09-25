@@ -22,7 +22,10 @@ from stech_mcp.db.product_schema_repository import ProductSchemaRepository
 from stech_mcp.db.product_work_control_repository import ProductWorkControlRepository
 from stech_mcp.db.product_work_query_repository import ProductWorkQueryRepository
 from stech_mcp.db.source_document_repository import SourceDocumentRepository
+from stech_mcp.db.taxonomy_repository import TaxonomyRepository
 from stech_mcp.http.source_client import SourceClient
+from stech_mcp.excel.excel_writer import ExcelWriter
+from stech_mcp.excel.template_inspector import TemplateInspector
 from stech_mcp.services.budgeted_worker_factory import (
     build_budgeted_background_worker,
     effective_background_worker_count,
@@ -32,6 +35,7 @@ from stech_mcp.services.channel_gap_analyzer import ChannelGapAnalyzer
 from stech_mcp.services.deltron_fact_adapter import DeltronFactAdapter
 from stech_mcp.services.fact_extractor import FactExtractor
 from stech_mcp.services.fact_promotion import FactPromotionService
+from stech_mcp.services.marketing_context import MarketingProductContextService
 from stech_mcp.services.multichannel_readiness import MultichannelReadinessService
 from stech_mcp.services.product_image_candidate_import import ProductImageCandidateImportService
 from stech_mcp.services.product_image_readiness import ProductImageReadinessService
@@ -43,11 +47,15 @@ from stech_mcp.services.product_workspace_v2 import ProductWorkspaceV2Service
 from stech_mcp.services.research.brave_image_search_provider import BraveImageSearchProvider
 from stech_mcp.services.research.research_planner import ResearchPlanner
 from stech_mcp.services.source_document_service import SourceDocumentService
+from stech_mcp.services.taxonomy_review import TaxonomyReviewService
 from stech_mcp.services.vtex_image_sync_authoritative import VtexImageSyncService
+from stech_mcp.tools.excel import register_excel_tools
+from stech_mcp.tools.marketing import register_marketing_tools
 from stech_mcp.tools.product_research import register_product_research_tools
 from stech_mcp.tools.product_schema import register_product_schema_tools
 from stech_mcp.tools.product_work import register_product_work_tools
 from stech_mcp.tools.product_workspace_v2 import register_product_workspace_v2_tools
+from stech_mcp.tools.taxonomy import register_taxonomy_tools
 
 
 vtex_image_sync_service = VtexImageSyncService(
@@ -172,6 +180,42 @@ product_workspace_v2_service = ProductWorkspaceV2Service(
     deltron_specification_repository=deltron_specification_repository,
 )
 
+# HERMES marketing integration is deliberately read-only. It composes product
+# truth and approved media references but owns no marketplace or Meta writes.
+marketing_context_service = MarketingProductContextService(
+    product_repository=_server.product_repository,
+    workspace_service=product_workspace_v2_service,
+    source_image_repository=_server.deltron_image_repository,
+    workspace_image_repository=_server.product_image_repository,
+)
+marketing_tools = register_marketing_tools(
+    _server.mcp,
+    context_service=marketing_context_service,
+    namespace=_server,
+)
+
+excel_template_inspector = TemplateInspector()
+excel_writer = ExcelWriter()
+excel_tools = register_excel_tools(
+    _server.mcp,
+    inspector=excel_template_inspector,
+    writer=excel_writer,
+    namespace=_server,
+)
+
+# CAT_V2 handles deterministic taxonomy inside V8. The MCP queue only captures
+# unresolved gaps for review and never writes DB_DISTRIBUIDORES without approval.
+taxonomy_repository = TaxonomyRepository(
+    _server.source_connection_factory,
+    _server.mcp_connection_factory,
+)
+taxonomy_review_service = TaxonomyReviewService(taxonomy_repository)
+taxonomy_tools = register_taxonomy_tools(
+    _server.mcp,
+    service=taxonomy_review_service,
+    namespace=_server,
+)
+
 background_config = BackgroundConfig.from_env()
 product_scanner = ProductScanner(
     product_repository=_server.product_repository,
@@ -207,6 +251,38 @@ product_workspace_v2_tools = register_product_workspace_v2_tools(
 
 mcp = _server.mcp
 settings = _server.settings
+
+# Public runtime aliases used by smoke tests and external HERMES integrations.
+# Tool registration stores the callable on the legacy shared server namespace;
+# re-export them here so `server_authoritative` is the single authoritative API.
+stech_health = _server.stech_health
+falabella_images_prepare = _server.falabella_images_prepare
+falabella_images_prepare_batch = _server.falabella_images_prepare_batch
+marketing_product_context = marketing_tools["marketing_product_context"]
+marketing_readiness = marketing_tools["marketing_readiness"]
+marketing_media_manifest = marketing_tools["marketing_media_manifest"]
+background_jobs_summary = product_workspace_v2_tools["background_jobs_summary"]
+maintenance_autofill_status = product_workspace_v2_tools["maintenance_autofill_status"]
+maintenance_autofill_scan_now = product_workspace_v2_tools["maintenance_autofill_scan_now"]
+maintenance_autofill_pause = product_workspace_v2_tools["maintenance_autofill_pause"]
+maintenance_autofill_resume = product_workspace_v2_tools["maintenance_autofill_resume"]
+maintenance_autofill_jobs = product_workspace_v2_tools["maintenance_autofill_jobs"]
+product_workspace_smart_complete = product_workspace_v2_tools["product_workspace_smart_complete"]
+excel_template_inspect = excel_tools["excel_template_inspect"]
+excel_write_copy = excel_tools["excel_write_copy"]
+taxonomy_missing_list = taxonomy_tools["taxonomy_missing_list"]
+taxonomy_catalog_get = taxonomy_tools["taxonomy_catalog_get"]
+taxonomy_review_sync = taxonomy_tools["taxonomy_review_sync"]
+taxonomy_review_list = taxonomy_tools["taxonomy_review_list"]
+taxonomy_review_get = taxonomy_tools["taxonomy_review_get"]
+taxonomy_propose = taxonomy_tools["taxonomy_propose"]
+taxonomy_propose_batch = taxonomy_tools["taxonomy_propose_batch"]
+taxonomy_approve_batch = taxonomy_tools["taxonomy_approve_batch"]
+taxonomy_apply_batch = taxonomy_tools["taxonomy_apply_batch"]
+taxonomy_sql_preview = taxonomy_tools["taxonomy_sql_preview"]
+taxonomy_approve = taxonomy_tools["taxonomy_approve"]
+taxonomy_reject = taxonomy_tools["taxonomy_reject"]
+taxonomy_apply = taxonomy_tools["taxonomy_apply"]
 
 
 def main() -> None:

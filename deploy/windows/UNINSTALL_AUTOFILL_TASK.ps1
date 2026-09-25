@@ -1,0 +1,1 @@
+$ErrorActionPreference = "Stop"\n$TaskName = "STECH Product Autofill"\n\n$task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue\nif ($null -eq $task) {\n    Write-Host "$TaskName is not installed."\n    exit 0\n}\n\nUnregister-ScheduledTask -TaskName $TaskName -Confirm:$false\nWrite-Host "$TaskName removed."\n

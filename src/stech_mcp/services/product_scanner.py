@@ -29,7 +29,14 @@ class ProductScanner:
 
     @staticmethod
     def _stock(row: dict[str, Any]) -> float:
-        for key in ("stock_total", "stock", "stock_actual"):
+        for key in (
+            "stock_valor",
+            "stock_actual_valor",
+            "stock_minimo_confirmado",
+            "stock_total",
+            "stock",
+            "stock_actual",
+        ):
             try:
                 if row.get(key) is not None:
                     return float(row.get(key) or 0)
@@ -49,12 +56,33 @@ class ProductScanner:
         image_rows: list[dict[str, Any]] = []
         errors: list[dict[str, str]] = []
 
-        for row in rows:
-            pn = self._pn(row)
+        # A PN can exist at several distributors. Scan the product once and use
+        # the strongest current operational signal instead of creating duplicate
+        # research work for every distributor row.
+        grouped: dict[str, dict[str, Any]] = {}
+        for raw in rows:
+            pn = self._pn(raw)
             if not pn:
                 continue
+            current = grouped.get(pn)
+            stock = self._stock(raw)
+            if current is None:
+                grouped[pn] = {
+                    "row": raw,
+                    "stock": stock,
+                    "distributor_count": 1,
+                }
+                continue
+            current["distributor_count"] = int(current["distributor_count"]) + 1
+            if stock > float(current["stock"] or 0):
+                current["stock"] = stock
+                current["row"] = raw
+
+        for pn, grouped_row in grouped.items():
+            row = dict(grouped_row["row"])
             category = self._category(row)
-            stock = self._stock(row)
+            stock = float(grouped_row["stock"] or 0)
+            distributor_count = int(grouped_row["distributor_count"] or 1)
 
             try:
                 technical = self.technical_status_service.get(pn)
@@ -73,7 +101,11 @@ class ProductScanner:
                             "category_code": category,
                             "scope": "MASTER",
                             "requested_fields": missing,
-                            "source_context": {"scanner": "MASTER", "stock": stock},
+                            "source_context": {
+                                "scanner": "MASTER",
+                                "stock": stock,
+                                "distributor_count": distributor_count,
+                            },
                         }
                     )
             except Exception as exc:
@@ -96,6 +128,7 @@ class ProductScanner:
                                 "scanner": "IMAGES",
                                 "stock": stock,
                                 "state": images.get("state"),
+                                "distributor_count": distributor_count,
                             },
                         }
                     )
@@ -133,6 +166,7 @@ class ProductScanner:
 
         return {
             "scanned": len(rows),
+            "unique_products_scanned": len(grouped),
             "technical_candidates": len(technical_rows),
             "image_candidates": len(image_rows),
             "technical_jobs_created": technical_created,

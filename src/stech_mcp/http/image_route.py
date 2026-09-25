@@ -25,8 +25,16 @@ def _inside_root(path: Path, root: Path) -> bool:
     return True
 
 
-def build_vtex_image_route(*, signer: ImageUrlSigner, image_repository: Any, root: str | Path) -> Route:
+def _build_signed_image_route(
+    *,
+    path: str,
+    signer: ImageUrlSigner,
+    image_repository: Any,
+    root: str | Path,
+    required_variant_prefix: str | None = None,
+) -> Route:
     configured_root = Path(root).expanduser().resolve()
+    variant_prefix = str(required_variant_prefix or "").strip().upper() or None
 
     async def serve(request):
         token = request.path_params.get("token", "")
@@ -42,6 +50,10 @@ def build_vtex_image_route(*, signer: ImageUrlSigner, image_repository: Any, roo
             return PlainTextResponse("Forbidden", status_code=403)
         if not bool(row.get("is_approved")):
             return PlainTextResponse("Forbidden", status_code=403)
+        if variant_prefix:
+            variant = str(row.get("variant_type") or "").strip().upper()
+            if not variant.startswith(variant_prefix):
+                return PlainTextResponse("Forbidden", status_code=403)
 
         storage_path = str(row.get("storage_path") or "").strip()
         if not storage_path:
@@ -60,4 +72,23 @@ def build_vtex_image_route(*, signer: ImageUrlSigner, image_repository: Any, roo
             filename=None,
         )
 
-    return Route("/vtex-images/{token}", endpoint=serve, methods=["GET"])
+    return Route(path, endpoint=serve, methods=["GET"])
+
+
+def build_vtex_image_route(*, signer: ImageUrlSigner, image_repository: Any, root: str | Path) -> Route:
+    return _build_signed_image_route(
+        path="/vtex-images/{token}",
+        signer=signer,
+        image_repository=image_repository,
+        root=root,
+    )
+
+
+def build_falabella_image_route(*, signer: ImageUrlSigner, image_repository: Any, root: str | Path) -> Route:
+    return _build_signed_image_route(
+        path="/falabella-images/{token}",
+        signer=signer,
+        image_repository=image_repository,
+        root=root,
+        required_variant_prefix="FALABELLA_",
+    )
