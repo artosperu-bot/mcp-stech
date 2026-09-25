@@ -129,7 +129,7 @@ class Settings(BaseSettings):
         """Return a persistent signing secret for long-lived Falabella image URLs.
 
         An explicit FALABELLA_IMAGE_SIGNING_SECRET wins. If absent, the secret is
-        stored outside Git under STECH_IMAGE_CHANNEL_ROOT so MCP restarts do not
+        stored outside Git under STECH_CHANNEL_IMAGE_ROOT so MCP restarts do not
         invalidate URLs that Seller Center may still be downloading.
         """
 
