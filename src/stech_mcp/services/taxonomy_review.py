@@ -12,7 +12,7 @@ class TaxonomyReviewService:
     def sync(self, *, limit: int = 1000, distributor: str | None = None) -> dict[str, Any]:
         result = self.repository.sync_missing(limit=limit, distributor=distributor)
         pending_count = self.repository.count_reviews(status="PENDING")
-        pending_sample = self.repository.list_reviews(status="PENDING", limit=50)
+        pending_sample = self.repository.list_reviews(status="PENDING", limit=50, after_review_id=0)
         return {
             **result,
             "pending_count": pending_count,
@@ -34,9 +34,27 @@ class TaxonomyReviewService:
             "pairs": rows,
         }
 
-    def list(self, *, status: str | None = "PENDING", limit: int = 100) -> dict[str, Any]:
-        rows = self.repository.list_reviews(status=status, limit=limit)
-        return {"status": status, "count": len(rows), "reviews": rows}
+    def list(
+        self,
+        *,
+        status: str | None = "PENDING",
+        limit: int = 100,
+        after_review_id: int = 0,
+    ) -> dict[str, Any]:
+        rows = self.repository.list_reviews(
+            status=status,
+            limit=limit,
+            after_review_id=after_review_id,
+        )
+        next_after = int(rows[-1]["taxonomy_review_id"]) if rows else None
+        return {
+            "status": status,
+            "count": len(rows),
+            "after_review_id": int(after_review_id or 0),
+            "next_after_review_id": next_after,
+            "has_more": len(rows) >= max(1, min(int(limit), 1000)),
+            "reviews": rows,
+        }
 
     def get(self, review_id: int) -> dict[str, Any]:
         row = self.repository.get_review(int(review_id))
