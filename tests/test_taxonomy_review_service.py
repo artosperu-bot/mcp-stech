@@ -9,8 +9,8 @@ class FakeRepository:
         self.calls.append(("sync", limit, distributor))
         return {"detected": 2, "inserted": 2, "refreshed": 0}
 
-    def list_reviews(self, *, status, limit):
-        self.calls.append(("list", status, limit))
+    def list_reviews(self, *, status, limit, after_review_id=0):
+        self.calls.append(("list", status, limit, after_review_id))
         return [{"taxonomy_review_id": 1}, {"taxonomy_review_id": 2}]
 
     def count_reviews(self, *, status):
@@ -155,3 +155,14 @@ def test_batch_rejects_duplicate_review_id_without_aborting_other_items():
 
     assert out["proposed_count"] == 1
     assert out["error_count"] == 1
+
+
+def test_review_list_returns_stable_pagination_cursor():
+    service = TaxonomyReviewService(FakeRepository())
+
+    out = service.list(status="PENDING", limit=2, after_review_id=40)
+
+    assert out["after_review_id"] == 40
+    assert out["next_after_review_id"] == 2
+    assert out["has_more"] is True
+    assert out["count"] == 2
