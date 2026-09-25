@@ -285,9 +285,11 @@ WHERE producto_distribuidor_id = ?""",
         *,
         status: str | None = "PENDING",
         limit: int = 100,
+        after_review_id: int = 0,
     ) -> list[dict[str, Any]]:
         bounded = max(1, min(int(limit), 1000))
         state = _clean(status)
+        after_id = max(int(after_review_id or 0), 0)
         connection = self._mcp_connection_factory()
         try:
             cursor = connection.cursor()
@@ -296,14 +298,18 @@ WHERE producto_distribuidor_id = ?""",
                     f"""SELECT TOP ({bounded}) *
 FROM dbo.taxonomy_review
 WHERE status = ?
-ORDER BY updated_at ASC, taxonomy_review_id ASC""",
+  AND taxonomy_review_id > ?
+ORDER BY taxonomy_review_id ASC""",
                     state.upper(),
+                    after_id,
                 )
             else:
                 cursor.execute(
                     f"""SELECT TOP ({bounded}) *
 FROM dbo.taxonomy_review
-ORDER BY updated_at DESC, taxonomy_review_id DESC"""
+WHERE taxonomy_review_id > ?
+ORDER BY taxonomy_review_id ASC""",
+                    after_id,
                 )
             return _rows_to_dicts(cursor, list(cursor.fetchall()))
         finally:
