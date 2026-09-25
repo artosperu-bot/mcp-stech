@@ -96,3 +96,62 @@ def test_apply_is_separate_from_propose_and_approve():
     assert proposed["review"]["status"] == "PROPOSED"
     assert approved["review"]["status"] == "APPROVED"
     assert applied["review"]["status"] == "APPLIED"
+
+
+def test_batch_propose_approve_apply_preserves_review_stages():
+    service = TaxonomyReviewService(FakeRepository())
+
+    proposed = service.propose_batch(
+        [
+            {
+                "review_id": 41,
+                "category": "REPUESTOS",
+                "subcategory": "REPUESTO PARA NOTEBOOK",
+                "confidence": "MEDIA",
+                "reason": "Pieza interna ASUS para notebook.",
+                "evidence": ["product_name"],
+            },
+            {
+                "review_id": 48,
+                "category": "COMPONENTES",
+                "subcategory": "FUENTE DE PODER",
+                "confidence": "ALTA",
+                "reason": "PSU ASUS.",
+                "evidence": ["product_name:PSU"],
+            },
+        ],
+        proposed_by="CHATGPT",
+    )
+    approved = service.approve_batch([41, 48], approved_by="STEVE")
+    applied = service.apply_batch([41, 48], applied_by="CHATGPT")
+
+    assert proposed["proposed_count"] == 2
+    assert proposed["error_count"] == 0
+    assert approved["approved_count"] == 2
+    assert applied["applied_count"] == 2
+
+
+def test_batch_rejects_duplicate_review_id_without_aborting_other_items():
+    service = TaxonomyReviewService(FakeRepository())
+
+    out = service.propose_batch(
+        [
+            {
+                "review_id": 41,
+                "category": "REPUESTOS",
+                "subcategory": "REPUESTO PARA NOTEBOOK",
+                "confidence": "ALTA",
+                "reason": "pieza",
+            },
+            {
+                "review_id": 41,
+                "category": "REPUESTOS",
+                "subcategory": "REPUESTO PARA NOTEBOOK",
+                "confidence": "ALTA",
+                "reason": "duplicado",
+            },
+        ]
+    )
+
+    assert out["proposed_count"] == 1
+    assert out["error_count"] == 1
