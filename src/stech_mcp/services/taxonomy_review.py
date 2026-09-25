@@ -11,8 +11,14 @@ class TaxonomyReviewService:
 
     def sync(self, *, limit: int = 1000, distributor: str | None = None) -> dict[str, Any]:
         result = self.repository.sync_missing(limit=limit, distributor=distributor)
-        pending = self.repository.list_reviews(status="PENDING", limit=min(max(int(limit), 1), 1000))
-        return {**result, "pending_count": len(pending), "pending": pending}
+        pending_count = self.repository.count_reviews(status="PENDING")
+        pending_sample = self.repository.list_reviews(status="PENDING", limit=50)
+        return {
+            **result,
+            "pending_count": pending_count,
+            "pending_sample_count": len(pending_sample),
+            "pending_sample": pending_sample,
+        }
 
     def missing(self, *, limit: int = 100, distributor: str | None = None) -> dict[str, Any]:
         rows = self.repository.list_missing(limit=limit, distributor=distributor)
