@@ -6,6 +6,7 @@ from typing import Any
 
 
 _TERMINAL = {"APPLIED", "REJECTED", "RESOLVED_EXTERNALLY"}
+_GENERIC_CATEGORIES = {"COMPONENTE", "COMPONENTES", "PRODUCTO", "OTROS"}
 
 
 def _row_to_dict(cursor: Any, row: Any) -> dict[str, Any] | None:
@@ -67,6 +68,7 @@ INNER JOIN dbo.DST_DISTRIBUIDOR AS d
 WHERE p.activo = 1
   AND (
       NULLIF(LTRIM(RTRIM(p.categoria)), '') IS NULL
+      OR UPPER(LTRIM(RTRIM(p.categoria))) IN ('COMPONENTE','COMPONENTES','PRODUCTO','OTROS')
       OR NULLIF(LTRIM(RTRIM(p.subcategoria)), '') IS NULL
   )
 """
@@ -397,7 +399,9 @@ WHERE taxonomy_review_id = ?""",
             "status": review.get("status"),
             "sql": (
                 "UPDATE dbo.PRD_PRODUCTO_DISTRIBUIDOR SET "
-                "categoria = CASE WHEN NULLIF(LTRIM(RTRIM(categoria)), '') IS NULL THEN ? ELSE categoria END, "
+                "categoria = CASE WHEN NULLIF(LTRIM(RTRIM(categoria)), '') IS NULL "
+                "OR UPPER(LTRIM(RTRIM(categoria))) IN ('COMPONENTE','COMPONENTES','PRODUCTO','OTROS') "
+                "THEN ? ELSE categoria END, "
                 "subcategoria = CASE WHEN NULLIF(LTRIM(RTRIM(subcategoria)), '') IS NULL THEN ? ELSE subcategoria END, "
                 "updated_at = SYSDATETIME() WHERE producto_distribuidor_id = ?;"
             ),
@@ -406,7 +410,7 @@ WHERE taxonomy_review_id = ?""",
                 review.get("proposed_subcategory"),
                 review.get("producto_distribuidor_id"),
             ],
-            "guard": "ONLY_MISSING_FIELDS_AND_APPROVED_REVIEW",
+            "guard": "ONLY_MISSING_OR_GENERIC_FIELDS_AND_APPROVED_REVIEW",
         }
 
     def apply_review(self, review_id: int, *, applied_by: str) -> dict[str, Any]:
@@ -438,7 +442,15 @@ WHERE producto_distribuidor_id = ?""",
 
             current_category = _clean(row[0])
             current_subcategory = _clean(row[1])
-            if current_category and current_category.casefold() != category.casefold():
+            current_category_is_generic = (
+                bool(current_category)
+                and current_category.upper() in _GENERIC_CATEGORIES
+            )
+            if (
+                current_category
+                and not current_category_is_generic
+                and current_category.casefold() != category.casefold()
+            ):
                 raise ValueError("source category changed after proposal")
             if current_subcategory and current_subcategory.casefold() != subcategory.casefold():
                 raise ValueError("source subcategory changed after proposal")
@@ -447,7 +459,9 @@ WHERE producto_distribuidor_id = ?""",
             cursor.execute(
                 """UPDATE dbo.PRD_PRODUCTO_DISTRIBUIDOR
 SET categoria = CASE
-        WHEN NULLIF(LTRIM(RTRIM(categoria)), '') IS NULL THEN ?
+        WHEN NULLIF(LTRIM(RTRIM(categoria)), '') IS NULL
+          OR UPPER(LTRIM(RTRIM(categoria))) IN ('COMPONENTE','COMPONENTES','PRODUCTO','OTROS')
+        THEN ?
         ELSE categoria
     END,
     subcategoria = CASE
