@@ -2,18 +2,27 @@ from stech_mcp.services.product_image_readiness import ProductImageReadinessServ
 
 
 class Products:
-    def __init__(self, product=None):
+    def __init__(self, product=None, products=None):
         self.product = product or {"part_number": "PN1", "producto_distribuidor_id": 1}
+        self.products = products
 
     def get_by_partnumber(self, pn):
         return self.product
 
+    def list_by_partnumber(self, pn, limit=100):
+        if self.products is not None:
+            return list(self.products)[:limit]
+        return [self.product]
+
 
 class Source:
-    def __init__(self, rows=None):
+    def __init__(self, rows=None, by_product=None):
         self.rows = rows or []
+        self.by_product = by_product or {}
 
     def list_for_product(self, product_id):
+        if product_id in self.by_product:
+            return list(self.by_product[product_id])
         return list(self.rows)
 
 
@@ -39,10 +48,10 @@ class Workspace:
         }
 
 
-def service(images=None, source=None, policy=None):
+def service(images=None, source=None, policy=None, products=None, by_product=None):
     return ProductImageReadinessService(
-        product_repository=Products(),
-        source_image_repository=Source(source),
+        product_repository=Products(products=products),
+        source_image_repository=Source(source, by_product=by_product),
         workspace_image_repository=Workspace(images, policy),
     )
 
@@ -123,3 +132,33 @@ def test_channel_policy_can_require_only_two_images_and_minimum_resolution():
     assert result["state"] == "INCOMPLETE"
     assert result["quality_ok_count"] == 1
     assert "quality_minimum_not_met" in result["missing_reasons"]
+
+def test_source_images_are_aggregated_across_distributors_for_same_pn():
+    products = [
+        {"part_number": "PN1", "producto_distribuidor_id": 1, "distribuidor": "DELTRON"},
+        {"part_number": "PN1", "producto_distribuidor_id": 2, "distribuidor": "INGRAM"},
+    ]
+    by_product = {
+        1: [
+            {
+                "part_number_snapshot": "PN1",
+                "url_origen": "https://example.test/d1.jpg",
+                "orden_imagen": 1,
+            }
+        ],
+        2: [
+            {
+                "part_number_snapshot": "PN1",
+                "url_origen": f"https://example.test/i{position}.jpg",
+                "orden_imagen": position,
+            }
+            for position in range(2, 5)
+        ],
+    }
+
+    result = service(products=products, by_product=by_product).get("pn1")
+
+    assert result["source_image_count"] == 4
+    assert result["image_count"] == 4
+    assert result["exact_count"] == 4
+    assert result["state"] == "READY"

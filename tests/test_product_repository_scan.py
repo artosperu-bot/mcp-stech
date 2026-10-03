@@ -31,6 +31,8 @@ def test_list_for_scan_uses_stable_partnumber_cursor():
     rows = repo.list_for_scan(after_partnumber="PN1", limit=25)
     assert [row["partnumber"] for row in rows] == ["PN2", "PN3"]
     sql, params = conn.cur.executions[0]
+    assert "SELECT DISTINCT TOP (25) part_number" in sql
     assert "part_number > ?" in sql
-    assert "ORDER BY part_number" in sql
+    assert "INNER JOIN page_pn" in sql
+    assert "ORDER BY src.part_number" in sql
     assert params == ("PN1",)

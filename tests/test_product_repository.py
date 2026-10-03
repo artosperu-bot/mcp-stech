@@ -50,11 +50,28 @@ def test_product_get_uses_real_v8_part_number_column_and_parameters():
     result = repo.get_by_partnumber("82YU00XYLM'; DROP TABLE X;--")
 
     assert "part_number = ?" in conn.cursor_obj.sql
+    assert "ORDER BY ultima_observacion DESC" in conn.cursor_obj.sql
     assert "DROP TABLE" not in conn.cursor_obj.sql
     assert conn.cursor_obj.params == ("82YU00XYLM'; DROP TABLE X;--",)
     assert result["marca"] == "LENOVO"
     assert result["partnumber"] == "82YU00XYLM"
     assert result["part_number"] == "82YU00XYLM"
+    assert conn.closed is True
+
+
+
+def test_product_list_by_partnumber_returns_all_current_distributor_rows():
+    conn = FakeConnection(many=True)
+    repo = ProductRepository(lambda: conn, view_name="dbo.V_PRD_PRODUCTO_ACTUAL")
+
+    rows = repo.list_by_partnumber("82YU00XYLM", limit=50)
+
+    assert "part_number = ?" in conn.cursor_obj.sql
+    assert "TOP (50)" in conn.cursor_obj.sql
+    assert "ORDER BY ultima_observacion DESC" in conn.cursor_obj.sql
+    assert conn.cursor_obj.params == ("82YU00XYLM",)
+    assert len(rows) == 2
+    assert rows[0]["producto_distribuidor_id"] == 101
     assert conn.closed is True
 
 

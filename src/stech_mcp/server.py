@@ -18,8 +18,9 @@ from stech_mcp.db.product_master_repository import ProductMasterRepository
 from stech_mcp.db.product_repository import ProductRepository
 from stech_mcp.domain.packaging_resolver import resolve_package
 from stech_mcp.domain.packaging_rules import estimate_package_weight, validate_package_dimensions
-from stech_mcp.http.image_route import build_vtex_image_route
+from stech_mcp.http.image_route import build_falabella_image_route, build_vtex_image_route
 from stech_mcp.services.coolbox_preview import _load_specs, _screen, build_coolbox_preview
+from stech_mcp.services.falabella_image_bridge import FalabellaImageBridgeService
 from stech_mcp.services.image_signing import ImageUrlSigner
 from stech_mcp.services.local_image_sync import LocalImageSyncService
 from stech_mcp.services.marketplace_preview import build_marketplace_preview
@@ -55,6 +56,22 @@ image_signer = ImageUrlSigner(
     secret=settings.vtex_image_signing_secret_value(),
     public_base=settings.vtex_image_public_base,
     ttl_seconds=settings.vtex_image_url_ttl_seconds,
+)
+falabella_image_signer = ImageUrlSigner(
+    secret=settings.falabella_image_signing_secret_value(),
+    public_base=settings.falabella_image_public_base,
+    ttl_seconds=settings.falabella_image_url_ttl_seconds,
+)
+falabella_image_service = FalabellaImageBridgeService(
+    source_root=settings.stech_image_root,
+    channel_root=settings.stech_channel_image_root,
+    local_service=local_image_sync_service,
+    repository=product_image_repository,
+    signer=falabella_image_signer,
+    canvas_px=settings.falabella_image_canvas_px,
+    max_bytes=settings.falabella_image_max_bytes,
+    min_source_px=settings.falabella_image_min_source_px,
+    margin_px=settings.falabella_image_margin_px,
 )
 vtex_image_client = (
     VtexImageClient(
@@ -487,15 +504,55 @@ def product_images_get(partnumber: str) -> dict[str, Any]:
 
 
 @mcp.tool()
-def product_images_sync_local(partnumber: str) -> dict[str, Any]:
-    """Descubre imágenes locales exactas del PN, valida y persiste metadata en STECH_MCP."""
-    return local_image_sync_service.sync(partnumber)
+def product_images_folders_get(partnumber: str) -> dict[str, Any]:
+    """Lista y clasifica todas las carpetas locales donde existe el Part Number, con sus rutas completas y recomendación."""
+    folders = local_image_sync_service.folders_find(partnumber)
+    return {
+        "partnumber": partnumber.strip().upper(),
+        "folder_count": len(folders),
+        "has_multiple_folders": len(folders) > 1,
+        "recommended_folder": folders[0]["folder_path"] if folders else None,
+        "folders": folders,
+    }
 
 
 @mcp.tool()
-def product_images_validate(partnumber: str) -> dict[str, Any]:
+def product_images_sync_local(partnumber: str, folder_path: str = "") -> dict[str, Any]:
+    """Descubre imágenes locales exactas del PN, valida y persiste metadata en STECH_MCP.
+
+    Si existen múltiples carpetas para el mismo PN (ej. canónica vs _STECH_CONVERTIDAS vs 800x800),
+    devuelve CHOICE_REQUIRED y no procesa ninguna hasta recibir folder_path explícito.
+    """
+    return local_image_sync_service.sync(partnumber, folder_path=folder_path.strip() or None)
+
+
+@mcp.tool()
+def product_images_validate(partnumber: str, folder_path: str = "") -> dict[str, Any]:
     """Valida el inventario local; `_01` es obligatorio y siempre es principal."""
-    return local_image_sync_service.validate(partnumber)
+    return local_image_sync_service.validate(partnumber, folder_path=folder_path.strip() or None)
+
+
+@mcp.tool()
+def falabella_images_prepare(
+    partnumber: str,
+    max_images: int = 8,
+    folder_path: str = "",
+) -> dict[str, Any]:
+    """Prepara hasta 8 imágenes Falabella 1500x1500 y devuelve URLs firmadas públicas."""
+    return falabella_image_service.prepare(
+        partnumber,
+        max_images=max_images,
+        folder_path=folder_path.strip() or None,
+    )
+
+
+@mcp.tool()
+def falabella_images_prepare_batch(
+    partnumbers: list[str],
+    max_images: int = 8,
+) -> dict[str, Any]:
+    """Prepara imágenes Falabella por lote, conservando originales y orden _01.._08."""
+    return falabella_image_service.prepare_batch(partnumbers, max_images=max_images)
 
 
 @mcp.tool()
@@ -505,9 +562,17 @@ def vtex_images_status(partnumber: str, account_code: str = "VTEX_STECH") -> dic
 
 
 @mcp.tool()
-def vtex_images_sync(partnumber: str, account_code: str = "VTEX_STECH") -> dict[str, Any]:
-    """Sube solo imágenes faltantes a VTEX, con `_01` como principal, y verifica por read-back."""
-    return vtex_image_sync_service.sync(partnumber, account_code=account_code)
+def vtex_images_sync(partnumber: str, account_code: str = "VTEX_STECH", folder_path: str = "") -> dict[str, Any]:
+    """Sube imágenes a VTEX usando una sola carpeta local validada.
+
+    Si existen varias carpetas físicas para el mismo PN y no se especifica
+    folder_path, devuelve CHOICE_REQUIRED y no escribe en VTEX.
+    """
+    return vtex_image_sync_service.sync(
+        partnumber,
+        account_code=account_code,
+        folder_path=folder_path.strip() or None,
+    )
 
 
 @mcp.tool()
@@ -686,6 +751,14 @@ def main() -> None:
             signer=image_signer,
             image_repository=product_image_repository,
             root=settings.stech_image_root,
+        ),
+    )
+    app.routes.insert(
+        0,
+        build_falabella_image_route(
+            signer=falabella_image_signer,
+            image_repository=product_image_repository,
+            root=settings.stech_channel_image_root,
         ),
     )
     uvicorn.run(app, host=settings.mcp_host, port=settings.mcp_port)

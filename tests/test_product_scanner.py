@@ -88,3 +88,23 @@ def test_image_gap_creates_research_images_job():
     assert call["rows"][0]["scope"] == "MASTER"
     assert call["rows"][0]["image_target_count"] == 4
     assert result["image_jobs_created"] == 1
+
+def test_multi_distributor_rows_are_scanned_once_and_use_stock_valor_for_priority():
+    scanner, work = build(
+        [
+            {"partnumber": "PN1", "category_code": "LAPTOP", "stock_valor": 0, "distribuidor": "A"},
+            {"partnumber": "PN1", "category_code": "LAPTOP", "stock_valor": 9, "distribuidor": "B"},
+        ],
+        {"PN1": {"missing_required": ["ram_gb"], "missing_recommended": []}},
+        {"PN1": {"state": "NO_IMAGES", "recommended_min": 4}},
+    )
+
+    result = scanner.scan_once(limit=10)
+
+    assert result["scanned"] == 2
+    assert result["unique_products_scanned"] == 1
+    assert len(work.calls) == 2
+    assert work.calls[0]["priority"] == 80
+    assert work.calls[1]["priority"] == 90
+    assert work.calls[0]["rows"][0]["source_context"]["stock"] == 9
+    assert work.calls[0]["rows"][0]["source_context"]["distributor_count"] == 2

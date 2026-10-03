@@ -74,3 +74,52 @@ def test_status_uses_structured_deltron_specs_before_research_and_tracks_source(
     assert result["missing_required"] == []
     assert result["missing_recommended"] == []
     assert result["completion_pct"] == 100
+
+
+class MultiProducts:
+    def list_by_partnumber(self, partnumber, limit=100):
+        assert partnumber == "82YU00XYLM"
+        return [
+            {
+                "partnumber": partnumber,
+                "producto_distribuidor_id": 2200,
+                "distribuidor": "INGRAM",
+                "familia": "NOTEBOOK",
+                "nombre": "Notebook Lenovo V15 G4 AMN",
+            },
+            {
+                "partnumber": partnumber,
+                "producto_distribuidor_id": 1162,
+                "distribuidor": "DELTRON",
+                "familia": "NOTEBOOK",
+                "nombre": "Notebook Lenovo V15 G4 AMN",
+            },
+        ][:limit]
+
+    def get_by_partnumber(self, partnumber):
+        return self.list_by_partnumber(partnumber, limit=1)[0]
+
+
+class MultiSpecs(Specs):
+    def list_for_product(self, product_id):
+        if product_id == 2200:
+            return []
+        return super().list_for_product(product_id)
+
+
+def test_status_keeps_deltron_structured_truth_when_newer_distributor_row_is_first():
+    service = ProductTechnicalStatusService(
+        product_repository=MultiProducts(),
+        enrichment_repository=Enrichments(),
+        schema_repository=Schema(),
+        deltron_specification_repository=MultiSpecs(),
+        deltron_adapter=DeltronFactAdapter(),
+    )
+
+    result = service.get("82YU00XYLM")
+
+    assert result["distributor_count"] == 2
+    assert result["known_fields"]["ram_gb"] == 16
+    assert result["known_fields"]["storage_gb"] == 512
+    assert result["field_sources"]["ram_gb"] == "DELTRON"
+    assert result["field_sources"]["storage_gb"] == "DELTRON"

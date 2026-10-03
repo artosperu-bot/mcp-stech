@@ -39,18 +39,48 @@ class ProductRepository:
         return product
 
     def get_by_partnumber(self, partnumber: str) -> dict[str, Any] | None:
+        """Return a deterministic current row for legacy single-product consumers.
+
+        When the same PN exists at multiple distributors, prefer the most recently
+        observed row. New multi-distributor consumers should call
+        `list_by_partnumber` instead of assuming a PN belongs to only one source.
+        """
         if not partnumber or not partnumber.strip():
             raise ValueError("partnumber is required")
 
         connection = self._connection_factory()
         try:
             cursor = connection.cursor()
-            sql = f"SELECT TOP (1) * FROM {self._view_name} WHERE part_number = ?"
+            sql = f"""SELECT TOP (1) *
+FROM {self._view_name}
+WHERE part_number = ?
+ORDER BY ultima_observacion DESC, producto_distribuidor_id DESC"""
             cursor.execute(sql, partnumber.strip())
             row = cursor.fetchone()
             if row is None:
                 return None
             return self._row_to_dict(cursor, row)
+        finally:
+            close = getattr(connection, "close", None)
+            if callable(close):
+                close()
+
+    def list_by_partnumber(self, partnumber: str, *, limit: int = 50) -> list[dict[str, Any]]:
+        """Return every current distributor row for an exact Part Number."""
+        pn = str(partnumber or "").strip()
+        if not pn:
+            raise ValueError("partnumber is required")
+        bounded = max(1, min(int(limit), 200))
+
+        connection = self._connection_factory()
+        try:
+            cursor = connection.cursor()
+            sql = f"""SELECT TOP ({bounded}) *
+FROM {self._view_name}
+WHERE part_number = ?
+ORDER BY ultima_observacion DESC, producto_distribuidor_id DESC"""
+            cursor.execute(sql, pn)
+            return [self._row_to_dict(cursor, row) for row in cursor.fetchall()]
         finally:
             close = getattr(connection, "close", None)
             if callable(close):
@@ -88,22 +118,40 @@ ORDER BY ultima_observacion DESC, producto_distribuidor_id DESC"""
         after_partnumber: str = "",
         limit: int = 100,
     ) -> list[dict[str, Any]]:
-        """Page the canonical product view in stable Part Number order for background scans."""
+        """Page by unique Part Number and include all current distributor rows.
+
+        Paging raw distributor rows can split one PN across page boundaries and
+        skip remaining distributors when the next cursor uses `part_number > ?`.
+        This query first selects the next N unique PNs, then returns every row
+        for those products.
+        """
         after = str(after_partnumber or "").strip().upper()
         bounded = max(1, min(int(limit), 500))
         connection = self._connection_factory()
         try:
             cursor = connection.cursor()
             if after:
-                sql = f"""SELECT TOP ({bounded}) *
-FROM {self._view_name}
-WHERE part_number > ?
-ORDER BY part_number"""
+                sql = f"""WITH page_pn AS (
+    SELECT DISTINCT TOP ({bounded}) part_number
+    FROM {self._view_name}
+    WHERE part_number > ?
+    ORDER BY part_number
+)
+SELECT src.*
+FROM {self._view_name} AS src
+INNER JOIN page_pn AS p ON p.part_number = src.part_number
+ORDER BY src.part_number, src.ultima_observacion DESC, src.producto_distribuidor_id DESC"""
                 cursor.execute(sql, after)
             else:
-                sql = f"""SELECT TOP ({bounded}) *
-FROM {self._view_name}
-ORDER BY part_number"""
+                sql = f"""WITH page_pn AS (
+    SELECT DISTINCT TOP ({bounded}) part_number
+    FROM {self._view_name}
+    ORDER BY part_number
+)
+SELECT src.*
+FROM {self._view_name} AS src
+INNER JOIN page_pn AS p ON p.part_number = src.part_number
+ORDER BY src.part_number, src.ultima_observacion DESC, src.producto_distribuidor_id DESC"""
                 cursor.execute(sql)
             return [self._row_to_dict(cursor, row) for row in cursor.fetchall()]
         finally:
