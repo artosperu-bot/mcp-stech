@@ -216,3 +216,59 @@ def test_sync_ignores_partial_partnumber_matches(tmp_path):
 
     assert result["image_count"] == 1
     assert Path(result["images"][0]["storage_path"]).name == f"{partnumber}_01.png"
+
+
+def test_folders_find_identifies_multiple_folders_and_prioritizes_canonical(tmp_path):
+    partnumber = "21QW000CLM"
+    # 1. Canonical folder: 5 images
+    canonical_dir = tmp_path / "LENOVO" / "COMPUTADORAS_NOTEBOOK" / partnumber
+    canonical_dir.mkdir(parents=True)
+    for pos in (1, 2, 3, 4, 5):
+        _write_png(canonical_dir / f"{partnumber}_{pos:02d}.jpg", pos)
+
+    # 2. Resized converted: 8 images
+    converted_dir = tmp_path / "LENOVO" / "COMPUTADORAS_NOTEBOOK" / "_STECH_CONVERTIDAS" / "800x800" / partnumber
+    converted_dir.mkdir(parents=True)
+    for pos in range(1, 9):
+        _write_png(converted_dir / f"{partnumber}_{pos:02d}.jpg", pos)
+
+    # 3. PSREF reference: 8 images
+    psref_dir = tmp_path / "LENOVO" / "COMPUTADORAS_NOTEBOOK" / "_STECH_CONVERTIDAS" / partnumber / "PSREF"
+    psref_dir.mkdir(parents=True)
+    for pos in range(1, 9):
+        _write_png(psref_dir / f"{partnumber}_{pos:02d}.jpg", pos)
+
+    repo = FakeImageRepository()
+    service = LocalImageSyncService(root=tmp_path, repository=repo)
+
+    folders = service.folders_find(partnumber)
+    assert len(folders) == 3
+    assert folders[0]["kind"] == "CANONICAL"
+    assert folders[0]["is_recommended"] is True
+    assert folders[0]["image_count"] == 5
+    assert folders[0]["folder_path"] == str(canonical_dir)
+
+    # Default sync stops and requires explicit choice when multiple folders exist
+    auto_result = service.sync(partnumber)
+    assert auto_result["state"] == "CHOICE_REQUIRED"
+    assert auto_result["reason"] == "multiple_folders_found"
+    assert auto_result["image_count"] == 0
+    assert auto_result["selected_folder"] is None
+    assert auto_result["has_multiple_folders"] is True
+    assert len(auto_result["candidate_folders"]) == 3
+    assert auto_result["errors"] == []
+
+    # Explicit sync allows targeting any chosen folder:
+    # 1) Canonical folder (5 images)
+    canonical_result = service.sync(partnumber, folder_path=canonical_dir)
+    assert canonical_result["state"] == "READY"
+    assert canonical_result["image_count"] == 5
+    assert canonical_result["selected_folder"] == str(canonical_dir)
+    assert canonical_result["errors"] == []
+
+    # 2) Converted 800x800 folder (8 images)
+    explicit_result = service.sync(partnumber, folder_path=converted_dir)
+    assert explicit_result["state"] == "READY"
+    assert explicit_result["image_count"] == 8
+    assert explicit_result["selected_folder"] == str(converted_dir)
+    assert explicit_result["errors"] == []

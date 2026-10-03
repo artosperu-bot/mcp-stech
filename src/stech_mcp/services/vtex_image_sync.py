@@ -611,14 +611,17 @@ class VtexImageSyncService:
         )
         return result
 
-    def sync(self, partnumber: str, *, account_code: str = "VTEX_STECH") -> dict[str, Any]:
+    def sync(self, partnumber: str, *, account_code: str = "VTEX_STECH", folder_path: str | None = None) -> dict[str, Any]:
         normalized = _normalize_partnumber(partnumber)
         account = str(account_code or "VTEX_STECH").strip().upper()
         if not normalized:
             raise ValueError("partnumber is required")
 
-        local_sync = self.local_service.sync(normalized)
-        validation = self.local_service.validate(normalized)
+        # The local-image service is authoritative for folder selection. When
+        # several physical folders exist, it returns CHOICE_REQUIRED unless an
+        # explicit folder_path was supplied by the operator/UI.
+        local_sync = self.local_service.sync(normalized, folder_path=folder_path)
+        validation = self.local_service.validate(normalized, folder_path=folder_path)
         if validation.get("state") != "READY":
             return {
                 "found": True,

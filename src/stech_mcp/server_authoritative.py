@@ -256,6 +256,9 @@ settings = _server.settings
 # Tool registration stores the callable on the legacy shared server namespace;
 # re-export them here so `server_authoritative` is the single authoritative API.
 stech_health = _server.stech_health
+product_images_folders_get = _server.product_images_folders_get
+product_images_sync_local = _server.product_images_sync_local
+product_images_validate = _server.product_images_validate
 falabella_images_prepare = _server.falabella_images_prepare
 falabella_images_prepare_batch = _server.falabella_images_prepare_batch
 marketing_product_context = marketing_tools["marketing_product_context"]

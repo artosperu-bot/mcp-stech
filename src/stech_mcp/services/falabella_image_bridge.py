@@ -201,13 +201,25 @@ class FalabellaImageBridgeService:
             "url": public_url,
         }
 
-    def prepare(self, partnumber: str, *, max_images: int = 8) -> dict[str, Any]:
+    def prepare(
+        self,
+        partnumber: str,
+        *,
+        max_images: int = 8,
+        folder_path: str | Path | None = None,
+    ) -> dict[str, Any]:
         normalized = _normalize_partnumber(partnumber)
         if not normalized:
             raise ValueError("partnumber is required")
         bounded = max(1, min(int(max_images), 8))
 
-        local = self.local_service.sync(normalized)
+        if folder_path is not None:
+            try:
+                local = self.local_service.sync(normalized, folder_path=folder_path)
+            except TypeError:
+                local = self.local_service.sync(normalized)
+        else:
+            local = self.local_service.sync(normalized)
         source_images = sorted(
             list(local.get("images") or []),
             key=lambda item: (
@@ -220,6 +232,9 @@ class FalabellaImageBridgeService:
                 "found": True,
                 "partnumber": normalized,
                 "state": "NO_IMAGES",
+                "selected_folder": local.get("selected_folder"),
+                "has_multiple_folders": bool(local.get("has_multiple_folders")),
+                "candidate_folders": list(local.get("candidate_folders") or []),
                 "image_count": 0,
                 "images": [],
                 "errors": list(local.get("errors") or []),
@@ -273,6 +288,9 @@ class FalabellaImageBridgeService:
             "found": True,
             "partnumber": normalized,
             "state": state,
+            "selected_folder": local.get("selected_folder"),
+            "has_multiple_folders": bool(local.get("has_multiple_folders")),
+            "candidate_folders": list(local.get("candidate_folders") or []),
             "source_image_count": len(source_images),
             "eligible_image_count": len(eligible),
             "ignored_image_count": max(len(source_images) - len(eligible), 0),
