@@ -60,6 +60,40 @@ def test_variant_sensitive_field_rejects_non_exact_source_partnumber():
         )
 
 
+def test_new_canonical_variant_sensitive_field_requires_exact_pn():
+    service = ProductFieldVerificationService(FakeEnrichmentRepository())
+
+    with pytest.raises(ValueError, match="exact source_partnumber"):
+        service.verify(
+            partnumber="PN1",
+            field_code="ram_gb",
+            value_number=16,
+            unit="GB",
+            confidence_grade="A1",
+            source_url="https://manufacturer.example/spec",
+            source_type="MANUFACTURER",
+            source_partnumber="PN2",
+            evidence_text="RAM 16 GB",
+        )
+
+
+def test_new_audio_variant_sensitive_field_rejects_weak_retailer_source():
+    service = ProductFieldVerificationService(FakeEnrichmentRepository())
+
+    with pytest.raises(ValueError, match="A1, A2 or B"):
+        service.verify(
+            partnumber="PN1",
+            field_code="battery_runtime_hours",
+            value_number=12,
+            unit="h",
+            confidence_grade="C",
+            source_url="https://retailer.example/pn1",
+            source_type="TRUSTED_RETAILER",
+            source_partnumber="PN1",
+            evidence_text="Battery life 12 hours",
+        )
+
+
 def test_verified_non_manual_value_requires_real_evidence_url_and_text():
     service = ProductFieldVerificationService(FakeEnrichmentRepository())
 

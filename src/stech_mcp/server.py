@@ -581,6 +581,13 @@ def product_loader_job_get(job_id: int) -> dict[str, Any]:
 
 
 @mcp.tool()
+def product_loader_job_list(limit: int = 50) -> dict[str, Any]:
+    """Lista Product Loader jobs persistentes e items reales para reconstrucción histórica en V8."""
+    jobs = product_loader_repository.list_jobs(limit=limit)
+    return {"count": len(jobs), "jobs": jobs}
+
+
+@mcp.tool()
 def product_loader_retry_item(job_id: int, item_id: int) -> dict[str, Any]:
     """Reintenta solo un item terminal/revisable sin recrear identidades VTEX ya confirmadas."""
     job = product_loader_orchestrator.retry_item(int(job_id), int(item_id))

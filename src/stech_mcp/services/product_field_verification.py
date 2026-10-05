@@ -37,6 +37,15 @@ _VARIANT_SENSITIVE_FIELDS = {
     "refresh_rate_hz",
     "os_name",
     "color",
+    # Canonical V2 fields.
+    "ram_gb",
+    "storage_gb",
+    "storage_type",
+    "battery_wh",
+    "speaker_power_w",
+    "battery_runtime_hours",
+    "battery_capacity_wh",
+    "charging_time_hours",
 }
 
 _STRONG_EXACT_SOURCE_TYPES = {
